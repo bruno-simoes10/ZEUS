@@ -1,4 +1,4 @@
-# EV Voice Finder
+# ZUES - Os três mosqueteiros
 
 ## Conectando ao GitHub
 
@@ -20,7 +20,7 @@
 
 4. Faça o primeiro commit:
    ```bash
-   git commit -m "Primeira versão do EV Voice Finder"
+   git commit -m "Primeira versão do ZEUS"
    ```
 
 5. Conecte seu repositório local ao GitHub:
