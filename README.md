@@ -1,4 +1,4 @@
-# ZUES - Os três mosqueteiros
+# ZEUS - Os três mosqueteiros
 
 ## Conectando ao GitHub
 
