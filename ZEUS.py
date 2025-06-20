@@ -30,34 +30,64 @@ class EVChargingFinder:
 
     def listen_for_command(self):
         with sr.Microphone() as source:
-            print("Ouvindo comando...")
-            # Ajustar sensibilidade do microfone
-            self.recognizer.dynamic_energy_threshold = True
-            self.recognizer.energy_threshold = 4000
-            self.recognizer.dynamic_energy_adjustment_damping = 0.15
-            self.recognizer.dynamic_energy_adjustment_ratio = 1.5
+            print("\n=== Sistema de Reconhecimento de Voz ===")
+            print("🎤 Ajustando microfone...")
             
-            # Ajustar para ruído ambiente
-            print("Ajustando para ruído ambiente...")
+            # Ajustes para captura mais completa
+            self.recognizer.dynamic_energy_threshold = False
+            self.recognizer.energy_threshold = 1000
+            self.recognizer.pause_threshold = 1.2
+            self.recognizer.phrase_threshold = 0.3
+            self.recognizer.non_speaking_duration = 1.0
+            
+            # Ajuste de ruído com feedback
+            print("🔊 Calibrando para ruído ambiente...")
             self.recognizer.adjust_for_ambient_noise(source, duration=1)
+            print("✅ Calibração concluída")
             
-            try:
-                print("Aguardando comando de voz...")
-                audio = self.recognizer.listen(source, timeout=7, phrase_time_limit=5)
-                print("Áudio capturado, processando...")
-                
-                command = self.recognizer.recognize_google(audio, language='pt-PT')
-                print(f"Comando reconhecido: {command}")
-                return command.lower()
-            except sr.WaitTimeoutError:
-                print("No speech detected")
-                return None
-            except sr.UnknownValueError:
-                print("Could not understand audio")
-                return None
-            except sr.RequestError as e:
-                print(f"Could not request results; {e}")
-                return None
+            max_attempts = 3  # Limite máximo de tentativas
+            attempt = 0
+            
+            while attempt < max_attempts:
+                try:
+                    print("\n🎙️  Pode falar agora...")
+                    audio = self.recognizer.listen(source, timeout=10, phrase_time_limit=None)
+                    print("🔍 Processando áudio...")
+                    
+                    command = self.recognizer.recognize_google(audio, language='pt-PT')
+                    print("\n📝 Texto reconhecido:")
+                    print(f"==> {command}")
+                    
+                    # Sistema de confirmação simplificado
+                    print("\nPressione ENTER se o texto estiver correto, ou qualquer outra tecla para tentar novamente")
+                    confirmation = input()
+                    
+                    if confirmation == "":
+                        return command.lower()
+                    else:
+                        attempt += 1
+                        if attempt < max_attempts:
+                            print(f"Tentativa {attempt + 1} de {max_attempts}...")
+                        continue
+                        
+                except sr.WaitTimeoutError:
+                    print("❌ Nenhuma fala detectada no tempo limite")
+                    return None
+                except sr.UnknownValueError:
+                    print("❌ Não foi possível entender o áudio, tente novamente")
+                    attempt += 1
+                    if attempt < max_attempts:
+                        print(f"Tentativa {attempt + 1} de {max_attempts}...")
+                    continue
+                except sr.RequestError as e:
+                    print(f"❌ Erro na requisição ao Google: {str(e)}")
+                    return None
+                except Exception as e:
+                    print(f"❌ Erro inesperado: {str(e)}")
+                    return None
+            
+            print("\n❌ Número máximo de tentativas atingido")
+            return None
 
     def init_database(self):
         # Inicializar o banco de dados SQLite
