@@ -4,6 +4,10 @@ import json
 import re
 import os
 import sqlite3
+from flask import Flask, render_template, request, jsonify
+import threading
+import signal
+import sys
 
 class EVChargingFinder:
     def __init__(self):
@@ -27,8 +31,14 @@ class EVChargingFinder:
         # Initialize SQLite database
         self.db_path = 'charging_stations.db'
         self.init_database()
+        
+        # Initialize Flask app
+        self.app = Flask(__name__)
+        self.setup_routes()
+        self.running = True
 
     def listen_for_command(self):
+        """Método original para uso em linha de comando"""
         with sr.Microphone() as source:
             print("\n=== Sistema de Reconhecimento de Voz ===")
             print("🎤 Ajustando microfone...")
@@ -88,6 +98,36 @@ class EVChargingFinder:
             
             print("\n❌ Número máximo de tentativas atingido")
             return None
+    
+    def listen_for_web(self):
+        """Método simplificado para uso na interface web"""
+        try:
+            with sr.Microphone() as source:
+                # Ajustes para captura
+                self.recognizer.dynamic_energy_threshold = False
+                self.recognizer.energy_threshold = 1000
+                self.recognizer.pause_threshold = 1.2
+                self.recognizer.phrase_threshold = 0.3
+                self.recognizer.non_speaking_duration = 1.0
+                
+                # Ajuste de ruído
+                self.recognizer.adjust_for_ambient_noise(source, duration=1)
+                
+                # Capturar áudio
+                audio = self.recognizer.listen(source, timeout=10, phrase_time_limit=None)
+                
+                # Reconhecer comando
+                command = self.recognizer.recognize_google(audio, language='pt-PT')
+                return command.lower()
+                
+        except sr.WaitTimeoutError:
+            raise Exception("Nenhuma fala detectada no tempo limite")
+        except sr.UnknownValueError:
+            raise Exception("Não foi possível entender o áudio")
+        except sr.RequestError as e:
+            raise Exception(f"Erro na requisição ao Google: {str(e)}")
+        except Exception as e:
+            raise Exception(f"Erro inesperado: {str(e)}")
 
     def init_database(self):
         # Inicializar o banco de dados SQLite
@@ -188,11 +228,117 @@ class EVChargingFinder:
         # Translate the response
         for eng, pt in responses.items():
             text = text.replace(eng, pt)
+        
+        # Usar threading para evitar conflito com Flask
+        def speak_in_thread():
+            try:
+                self.tts_engine.say(text)
+                self.tts_engine.runAndWait()
+            except Exception as e:
+                print(f"Erro na síntese de voz: {e}")
+        
+        threading.Thread(target=speak_in_thread, daemon=True).start()
+    
+    def setup_routes(self):
+        """Configurar rotas Flask para a interface web"""
+        
+        @self.app.route('/')
+        def index():
+            return render_template('index.html')
+        
+        @self.app.route('/listen', methods=['POST'])
+        def listen():
+            try:
+                command = self.listen_for_web()
+                return jsonify({
+                    'success': True,
+                    'command': command
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e)
+                })
+        
+        @self.app.route('/process', methods=['POST'])
+        def process():
+            try:
+                data = request.get_json()
+                command = data.get('command', '')
+                
+                location = self.extract_location(command)
+                
+                if location:
+                    best_charger = self.find_best_charger(location)
+                    
+                    if best_charger:
+                        response_text = (f"O melhor posto de carregamento em {location} "
+                                       f"está em {best_charger['address']} "
+                                       f"com um preço de {best_charger['price']} euros por kWh")
+                        
+                        # Falar a resposta
+                        self.speak_response(response_text)
+                        
+                        return jsonify({
+                            'success': True,
+                            'charger': best_charger,
+                            'message': response_text
+                        })
+                    else:
+                        error_msg = f"Desculpe, não encontrei nenhum posto de carregamento em {location}"
+                        self.speak_response(error_msg)
+                        return jsonify({
+                            'success': False,
+                            'error': error_msg
+                        })
+                else:
+                    error_msg = "Por favor, especifique uma localização em Portugal"
+                    self.speak_response(error_msg)
+                    return jsonify({
+                        'success': False,
+                        'error': error_msg
+                    })
+                    
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e)
+                })
+        
+        @self.app.route('/exit', methods=['POST'])
+        def exit_app():
+            self.running = False
+            # Usar threading para parar o servidor após um pequeno delay
+            def shutdown():
+                import time
+                time.sleep(1)
+                os.kill(os.getpid(), signal.SIGTERM)
             
-        self.tts_engine.say(text)
-        self.tts_engine.runAndWait()
+            threading.Thread(target=shutdown).start()
+            return jsonify({'success': True})
 
-    def run(self):
+    def run(self, mode='web'):
+        """Executar o sistema em modo web ou linha de comando"""
+        if mode == 'web':
+            self.run_web()
+        else:
+            self.run_console()
+    
+    def run_web(self):
+        """Executar interface web Flask"""
+        print("🌐 Iniciando interface web...")
+        print("📱 Acesse: http://localhost:8000")
+        print("🛑 Para parar: Ctrl+C ou use o botão 'Sair' na interface")
+        
+        try:
+            self.app.run(host='0.0.0.0', port=8000, debug=False)
+        except KeyboardInterrupt:
+            print("\n🛑 Servidor parado pelo usuário")
+        except Exception as e:
+            print(f"❌ Erro no servidor: {e}")
+    
+    def run_console(self):
+        """Executar em modo linha de comando (original)"""
         while True:
             print("Diga o seu comando...")  # "Say your command..." in Portuguese
             command = self.listen_for_command()
@@ -219,5 +365,15 @@ class EVChargingFinder:
                 break
 
 if __name__ == "__main__":
+    import sys
+    
     finder = EVChargingFinder()
-    finder.run()
+    
+    # Verificar argumentos de linha de comando
+    if len(sys.argv) > 1 and sys.argv[1] == '--console':
+        print("🎤 Iniciando modo linha de comando...")
+        finder.run(mode='console')
+    else:
+        print("🌐 Iniciando modo interface web...")
+        print("💡 Para usar modo linha de comando: python3 ZEUS.py --console")
+        finder.run(mode='web')

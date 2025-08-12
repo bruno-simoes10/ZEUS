@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZEUS - Assistente de Carregadores EV</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        .container {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        h1 {
+            text-align: center;
+            color: #4a5568;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+        .btn-speak {
+            background: #48bb78;
+            color: white;
+        }
+        .btn-speak:hover {
+            background: #38a169;
+            transform: translateY(-2px);
+        }
+        .btn-speak:disabled {
+            background: #a0aec0;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-exit {
+            background: #f56565;
+            color: white;
+        }
+        .btn-exit:hover {
+            background: #e53e3e;
+            transform: translateY(-2px);
+        }
+        .status {
+            text-align: center;
+            margin: 20px 0;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        .status.listening {
+            color: #48bb78;
+        }
+        .status.processing {
+            color: #ed8936;
+        }
+        .status.error {
+            color: #f56565;
+        }
+        .text-display {
+            background: #f7fafc;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            min-height: 60px;
+            font-size: 16px;
+        }
+        .result-display {
+            background: #edf2f7;
+            border: 2px solid #cbd5e0;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            min-height: 100px;
+        }
+        .result-card {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .result-card h3 {
+            margin: 0 0 10px 0;
+            color: #2d3748;
+        }
+        .result-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .info-item {
+            background: #f7fafc;
+            padding: 8px 12px;
+            border-radius: 4px;
+            border-left: 4px solid #4299e1;
+        }
+        .info-label {
+            font-weight: bold;
+            color: #2d3748;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔌 ZEUS - Assistente de Carregadores EV</h1>
+        
+        <div class="controls">
+            <button id="speakBtn" class="btn-speak" onclick="startListening()">🎤 Falar</button>
+            <button class="btn-exit" onclick="exitApp()">🚪 Sair</button>
+        </div>
+        
+        <div id="status" class="status">Pronto para ouvir</div>
+        
+        <div class="text-display">
+            <strong>Texto Reconhecido:</strong>
+            <div id="recognizedText">Clique em "Falar" para começar...</div>
+        </div>
+        
+        <div class="result-display">
+            <strong>Resultado da Busca:</strong>
+            <div id="searchResult">Os resultados aparecerão aqui...</div>
+        </div>
+    </div>
+
+    <script>
+        let isListening = false;
+        
+        function updateStatus(message, className = '') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = message;
+            statusDiv.className = 'status ' + className;
+        }
+        
+        function updateRecognizedText(text) {
+            document.getElementById('recognizedText').textContent = text;
+        }
+        
+        function updateSearchResult(result) {
+            const resultDiv = document.getElementById('searchResult');
+            if (result.error) {
+                resultDiv.innerHTML = `<div style="color: #f56565; font-weight: bold;">${result.error}</div>`;
+            } else if (result.charger) {
+                const charger = result.charger;
+                resultDiv.innerHTML = `
+                    <div class="result-card">
+                        <h3>✅ Melhor Carregador Encontrado</h3>
+                        <div class="result-info">
+                            <div class="info-item">
+                                <div class="info-label">Localização:</div>
+                                <div>${charger.location}</div>
+                            </div>
+                            <div class="info-item">
+                                <div class="info-label">Endereço:</div>
+                                <div>${charger.address}</div>
+                            </div>
+                            <div class="info-item">
+                                <div class="info-label">Preço:</div>
+                                <div>€${charger.price}/kWh</div>
+                            </div>
+                            <div class="info-item">
+                                <div class="info-label">Potência:</div>
+                                <div>${charger.power} kW</div>
+                            </div>
+                            <div class="info-item">
+                                <div class="info-label">Disponível:</div>
+                                <div>${charger.available ? '✅ Sim' : '❌ Não'}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            } else {
+                resultDiv.innerHTML = '<div>Nenhum resultado encontrado.</div>';
+            }
+        }
+        
+        async function startListening() {
+            if (isListening) return;
+            
+            isListening = true;
+            const speakBtn = document.getElementById('speakBtn');
+            speakBtn.disabled = true;
+            speakBtn.innerHTML = '<div class="loading"></div> Ouvindo...';
+            
+            updateStatus('🎤 Ouvindo... Pode falar agora!', 'listening');
+            updateRecognizedText('Processando áudio...');
+            
+            try {
+                const response = await fetch('/listen', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    updateRecognizedText(data.command);
+                    updateStatus('🔍 Processando comando...', 'processing');
+                    
+                    // Processar o comando
+                    const searchResponse = await fetch('/process', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ command: data.command })
+                    });
+                    
+                    const searchData = await searchResponse.json();
+                    updateSearchResult(searchData);
+                    
+                    if (searchData.charger) {
+                        updateStatus('✅ Busca concluída com sucesso!');
+                    } else {
+                        updateStatus('⚠️ Nenhum carregador encontrado', 'error');
+                    }
+                } else {
+                    updateRecognizedText('Erro: ' + data.error);
+                    updateStatus('❌ Erro no reconhecimento de voz', 'error');
+                }
+            } catch (error) {
+                updateRecognizedText('Erro de conexão');
+                updateStatus('❌ Erro de conexão', 'error');
+                console.error('Erro:', error);
+            } finally {
+                isListening = false;
+                speakBtn.disabled = false;
+                speakBtn.innerHTML = '🎤 Falar';
+            }
+        }
+        
+        function exitApp() {
+            if (confirm('Tem certeza que deseja sair?')) {
+                fetch('/exit', { method: 'POST' })
+                    .then(() => {
+                        window.close();
+                    })
+                    .catch(() => {
+                        window.close();
+                    });
+            }
+        }
+    </script>
+</body>
+</html>
