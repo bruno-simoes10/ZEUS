@@ -233,12 +233,68 @@ class EVChargingFinder:
             # Verificar se já existem dados
             cursor.execute('SELECT COUNT(*) FROM charging_stations')
             if cursor.fetchone()[0] == 0:
-                # Inserir dados iniciais
+                # Inserir dados realistas baseados na rede mobiE
                 cursor.execute('''
                     INSERT INTO charging_stations (id, location, address, price, power, available)
                     VALUES
-                        ('1', 'Matosinhos', 'Rua do Mar 123', 0.35, 50, true),
-                        ('2', 'Matosinhos', 'Avenida da Praia 456', 0.40, 150, true)
+                        -- Lisboa (múltiplas opções)
+                        ('MOBI-LIS-001', 'Lisboa', 'Avenida da Liberdade 180', 0.28, 22, true),
+                        ('MOBI-LIS-002', 'Lisboa', 'Rua Castilho 39 (El Corte Inglés)', 0.32, 50, true),
+                        ('MOBI-LIS-003', 'Lisboa', 'Avenida Engenheiro Duarte Pacheco 19', 0.25, 22, true),
+                        ('MOBI-LIS-004', 'Lisboa', 'Parque das Nações - Alameda dos Oceanos', 0.43, 150, true),
+                        ('MOBI-LIS-005', 'Lisboa', 'Centro Colombo - Avenida Lusíada', 0.35, 50, true),
+                        
+                        -- Porto (várias localizações)
+                        ('MOBI-POR-001', 'Porto', 'Rua de Santa Catarina 312', 0.30, 22, true),
+                        ('MOBI-POR-002', 'Porto', 'Via de Cintura Interna (VCI)', 0.45, 150, true),
+                        ('MOBI-POR-003', 'Porto', 'Avenida da Boavista 1277', 0.28, 22, true),
+                        ('MOBI-POR-004', 'Porto', 'Rua do Campo Alegre 687', 0.33, 50, true),
+                        ('MOBI-POR-005', 'Porto', 'Aeroporto Francisco Sá Carneiro', 0.40, 50, true),
+                        
+                        -- Matosinhos (expandido)
+                        ('MOBI-MAT-001', 'Matosinhos', 'Rua Brito Capelo 58', 0.29, 22, true),
+                        ('MOBI-MAT-002', 'Matosinhos', 'Avenida General Norton de Matos', 0.35, 50, true),
+                        ('MOBI-MAT-003', 'Matosinhos', 'Rua Roberto Ivens 625', 0.27, 22, true),
+                        ('MOBI-MAT-004', 'Matosinhos', 'Parque da Cidade do Porto', 0.31, 22, true),
+                        
+                        -- Coimbra
+                        ('MOBI-COI-001', 'Coimbra', 'Rua Ferreira Borges 59', 0.26, 22, true),
+                        ('MOBI-COI-002', 'Coimbra', 'Avenida Fernão de Magalhães 199', 0.38, 50, true),
+                        ('MOBI-COI-003', 'Coimbra', 'Pólo II da Universidade', 0.24, 22, true),
+                        ('MOBI-COI-004', 'Coimbra', 'Forum Coimbra - Rua Antero de Quental', 0.34, 50, true),
+                        
+                        -- Braga
+                        ('MOBI-BRG-001', 'Braga', 'Avenida Central 6', 0.27, 22, true),
+                        ('MOBI-BRG-002', 'Braga', 'Rua do Souto 23', 0.29, 22, true),
+                        ('MOBI-BRG-003', 'Braga', 'BragaParque - Quinta dos Congregados', 0.36, 50, true),
+                        ('MOBI-BRG-004', 'Braga', 'Campus de Gualtar - Universidade do Minho', 0.25, 22, true),
+                        
+                        -- Aveiro
+                        ('MOBI-AVE-001', 'Aveiro', 'Rua João Mendonça 505', 0.28, 22, true),
+                        ('MOBI-AVE-002', 'Aveiro', 'Fórum Aveiro - Rua Batalhão Caçadores 10', 0.37, 50, true),
+                        ('MOBI-AVE-003', 'Aveiro', 'Universidade de Aveiro - Campus Universitário', 0.23, 22, true),
+                        
+                        -- Faro
+                        ('MOBI-FAR-001', 'Faro', 'Rua de Santo António 56', 0.31, 22, true),
+                        ('MOBI-FAR-002', 'Faro', 'Aeroporto de Faro', 0.42, 50, true),
+                        ('MOBI-FAR-003', 'Faro', 'Forum Algarve - Avenida do Estádio Algarve', 0.39, 50, true),
+                        
+                        -- Évora
+                        ('MOBI-EVO-001', 'Évora', 'Praça do Giraldo 73', 0.26, 22, true),
+                        ('MOBI-EVO-002', 'Évora', 'Universidade de Évora - Largo dos Colegiais', 0.24, 22, true),
+                        ('MOBI-EVO-003', 'Évora', 'Évora Plaza - Rua Abel Viana', 0.35, 50, true),
+                        
+                        -- Setúbal
+                        ('MOBI-SET-001', 'Setúbal', 'Avenida Luísa Todi 163', 0.30, 22, true),
+                        ('MOBI-SET-002', 'Setúbal', 'AleShopping - Avenida António Bernardo Cabral de Macedo', 0.36, 50, true),
+                        
+                        -- Leiria
+                        ('MOBI-LEI-001', 'Leiria', 'Rua Rodrigues Cordeiro 23', 0.27, 22, true),
+                        ('MOBI-LEI-002', 'Leiria', 'LeiriaShopping - Rua de Telheiro', 0.34, 50, true),
+                        
+                        -- Viseu
+                        ('MOBI-VIS-001', 'Viseu', 'Rua Direita 76', 0.28, 22, true),
+                        ('MOBI-VIS-002', 'Viseu', 'Palácio do Gelo Shopping - Rua Cidade de Ourém', 0.37, 50, true)
                 ''')
                 conn.commit()
     
@@ -246,20 +302,42 @@ class EVChargingFinder:
         # Buscar carregadores por localização
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            
+            # Normalizar acentos para a busca
+            def normalize_text(text):
+                replacements = {
+                    'á': 'a', 'à': 'a', 'â': 'a', 'ã': 'a',
+                    'é': 'e', 'ê': 'e',
+                    'í': 'i',
+                    'ó': 'o', 'ô': 'o', 'õ': 'o',
+                    'ú': 'u', 'ü': 'u',
+                    'ç': 'c'
+                }
+                text = text.lower()
+                for accented, normal in replacements.items():
+                    text = text.replace(accented, normal)
+                return text
+            
+            # Buscar com normalização de acentos
             cursor.execute('''
                 SELECT id, location, address, price, power, available
                 FROM charging_stations
-                WHERE LOWER(location) = LOWER(?)
-            ''', (location,))
+            ''')
             
-            stations = [{
-                'id': row[0],
-                'location': row[1],
-                'address': row[2],
-                'price': row[3],
-                'power': row[4],
-                'available': bool(row[5])
-            } for row in cursor.fetchall()]
+            all_stations = cursor.fetchall()
+            normalized_location = normalize_text(location)
+            
+            stations = []
+            for row in all_stations:
+                if normalize_text(row[1]) == normalized_location:
+                    stations.append({
+                        'id': row[0],
+                        'location': row[1],
+                        'address': row[2],
+                        'price': row[3],
+                        'power': row[4],
+                        'available': bool(row[5])
+                    })
             
             return stations
     
@@ -268,21 +346,40 @@ class EVChargingFinder:
         command = command.lower()
         print(f"Extraindo localização do comando: {command}")
         
+        # Lista de cidades disponíveis na base de dados
+        available_cities = [
+            'lisboa', 'porto', 'matosinhos', 'coimbra', 'braga', 
+            'aveiro', 'faro', 'évora', 'evora', 'setúbal', 'setubal', 
+            'leiria', 'viseu'
+        ]
+        
+        # Padrões mais flexíveis para extração de localização
         patterns = [
-            r'(?:em|no|na)\s+([^,\s]+(?!\s+em|\s+no|\s+na))',  # "em/no/na Matosinhos"
-            r'(?:carregador|posto)\s+(?:em|no|na|de)?\s*([^,\s]+(?!\s+em|\s+no|\s+na))',  # "carregador em/no/na/de Matosinhos"
-            r'([^,\s]+)\s+(?:carregador|posto)',  # "Matosinhos carregador/posto"
-            r'^(matosinhos)$'  # Aceitar apenas "matosinhos"
+            r'(?:em|no|na|para|de)\s+([a-záàâãéêíóôõúç]+)',  # "em/no/na/para/de [cidade]"
+            r'(?:carregador|posto|carregamento)\s+(?:em|no|na|de|para)?\s*([a-záàâãéêíóôõúç]+)',  # "carregador em [cidade]"
+            r'([a-záàâãéêíóôõúç]+)\s+(?:carregador|posto|carregamento)',  # "[cidade] carregador"
+            r'(?:procurar|encontrar|buscar)\s+(?:em|no|na|de|para)?\s*([a-záàâãéêíóôõúç]+)',  # "procurar em [cidade]"
+            r'\b([a-záàâãéêíóôõúç]+)\b'  # Qualquer palavra que seja uma cidade conhecida
         ]
         
         for pattern in patterns:
-            match = re.search(pattern, command)
-            if match:
-                location = match.group(1).strip()
-                print(f"Localização encontrada: {location}")
-                return location
+            matches = re.findall(pattern, command)
+            for match in matches:
+                location = match.strip()
+                # Verificar se a localização está na lista de cidades disponíveis
+                if location in available_cities:
+                    print(f"Localização encontrada: {location}")
+                    return location
+                # Verificar variações de acentos
+                if location == 'evora' and 'évora' in available_cities:
+                    print(f"Localização encontrada (normalizada): évora")
+                    return 'évora'
+                if location == 'setubal' and 'setúbal' in available_cities:
+                    print(f"Localização encontrada (normalizada): setúbal")
+                    return 'setúbal'
         
         print("Nenhuma localização encontrada no comando")
+        print(f"Cidades disponíveis: {', '.join(available_cities)}")
         return None
 
     def find_best_charger(self, location):
@@ -313,13 +410,25 @@ class EVChargingFinder:
         for eng, pt in responses.items():
             text = text.replace(eng, pt)
         
-        # Usar threading para evitar conflito com Flask
+        # Usar comando 'say' nativo do macOS para evitar problemas com pyttsx3
         def speak_in_thread():
             try:
-                self.tts_engine.say(text)
-                self.tts_engine.runAndWait()
+                import subprocess
+                # Usar o comando 'say' nativo do macOS com voz em português
+                subprocess.run(['say', '-v', 'Joana', text], check=True)
+                print("✅ Síntese de voz concluída")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ Erro no comando 'say': {e}")
+                # Fallback para pyttsx3 se o comando 'say' falhar
+                try:
+                    tts = pyttsx3.init()
+                    tts.say(text)
+                    tts.runAndWait()
+                    tts.stop()
+                except Exception as e2:
+                    print(f"❌ Erro no fallback pyttsx3: {e2}")
             except Exception as e:
-                print(f"Erro na síntese de voz: {e}")
+                print(f"❌ Erro na síntese de voz: {e}")
         
         threading.Thread(target=speak_in_thread, daemon=True).start()
     
