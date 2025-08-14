@@ -55,14 +55,7 @@
             cursor: not-allowed;
             transform: none;
         }
-        .btn-exit {
-            background: #f56565;
-            color: white;
-        }
-        .btn-exit:hover {
-            background: #e53e3e;
-            transform: translateY(-2px);
-        }
+
         .status {
             text-align: center;
             margin: 20px 0;
@@ -142,8 +135,10 @@
         <h1>🔌 ZEUS - Assistente de Carregadores EV</h1>
         
         <div class="controls">
-            <button id="speakBtn" class="btn-speak" onclick="startListening()">🎤 Falar</button>
-            <button class="btn-exit" onclick="exitApp()">🚪 Sair</button>
+            <button id="speakBtn" class="btn-speak" onclick="toggleListening()">
+                <span class="mic-icon">🎤</span>
+                <span id="btnText">Falar</span>
+            </button>
         </div>
         
         <div id="status" class="status">Pronto para ouvir</div>
@@ -210,74 +205,118 @@
             }
         }
         
-        async function startListening() {
-            if (isListening) return;
-            
-            isListening = true;
+        let isProcessing = false;
+        let currentListeningRequest = null;
+        
+        function resetButton() {
             const speakBtn = document.getElementById('speakBtn');
-            speakBtn.disabled = true;
-            speakBtn.innerHTML = '<div class="loading"></div> Ouvindo...';
+            const micIcon = speakBtn.querySelector('.mic-icon');
+            const btnText = speakBtn.querySelector('#btnText');
             
-            updateStatus('🎤 Ouvindo... Pode falar agora!', 'listening');
-            updateRecognizedText('Processando áudio...');
+            speakBtn.classList.remove('listening');
+            speakBtn.disabled = false;
+            micIcon.textContent = '🎤';
+            btnText.textContent = 'Falar';
+        }
+        
+        async function toggleListening() {
+            if (isProcessing) return;
             
-            try {
-                const response = await fetch('/listen', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
-                });
+            const speakBtn = document.getElementById('speakBtn');
+            const micIcon = speakBtn.querySelector('.mic-icon');
+            const btnText = speakBtn.querySelector('#btnText');
+            
+            if (!isListening) {
+                // Iniciar gravação
+                isListening = true;
                 
-                const data = await response.json();
+                speakBtn.classList.add('listening');
+                micIcon.textContent = '🛑';
+                btnText.textContent = 'Parar';
                 
-                if (data.success) {
-                    updateRecognizedText(data.command);
-                    updateStatus('🔍 Processando comando...', 'processing');
-                    
-                    // Processar o comando
-                    const searchResponse = await fetch('/process', {
+                updateStatus('🎤 Gravando... Clique novamente para parar!', 'listening');
+                updateRecognizedText('Gravação iniciada...');
+                
+                try {
+                    // Iniciar gravação no servidor
+                    const startResponse = await fetch('/start_recording', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({ command: data.command })
+                        }
                     });
                     
-                    const searchData = await searchResponse.json();
-                    updateSearchResult(searchData);
+                    const startData = await startResponse.json();
                     
-                    if (searchData.charger) {
-                        updateStatus('✅ Busca concluída com sucesso!');
+                    if (startData.success) {
+                        updateStatus('🎤 Gravando continuamente... Clique em PARAR quando terminar!', 'listening');
+                        updateRecognizedText('🔴 GRAVANDO - Fale agora!');
                     } else {
-                        updateStatus('⚠️ Nenhum carregador encontrado', 'error');
+                        throw new Error(startData.error || 'Erro ao iniciar gravação');
                     }
-                } else {
-                    updateRecognizedText('Erro: ' + data.error);
-                    updateStatus('❌ Erro no reconhecimento de voz', 'error');
+                    
+                } catch (error) {
+                    updateRecognizedText('Erro ao iniciar gravação');
+                    updateStatus('❌ Erro ao iniciar gravação', 'error');
+                    console.error('Erro:', error);
+                    resetButton();
+                    isListening = false;
                 }
-            } catch (error) {
-                updateRecognizedText('Erro de conexão');
-                updateStatus('❌ Erro de conexão', 'error');
-                console.error('Erro:', error);
-            } finally {
-                isListening = false;
-                speakBtn.disabled = false;
-                speakBtn.innerHTML = '🎤 Falar';
+            } else {
+                // Parar gravação
+                isProcessing = true;
+                updateStatus('⏹️ Parando gravação e processando...', 'processing');
+                updateRecognizedText('Processando áudio gravado...');
+                
+                try {
+                    // Parar gravação e obter resultado
+                    const stopResponse = await fetch('/stop_recording', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    const stopData = await stopResponse.json();
+                    
+                    if (stopData.success && stopData.text) {
+                        updateRecognizedText(stopData.text);
+                        updateStatus('🔍 Processando comando...', 'processing');
+                        
+                        // Processar o comando
+                        const searchResponse = await fetch('/process', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({ command: stopData.text })
+                        });
+                        
+                        const searchData = await searchResponse.json();
+                        updateSearchResult(searchData);
+                        
+                        if (searchData.charger) {
+                            updateStatus('✅ Busca concluída com sucesso!');
+                        } else {
+                            updateStatus('⚠️ Nenhum carregador encontrado', 'error');
+                        }
+                    } else {
+                        updateRecognizedText('Erro: ' + (stopData.error || 'Nenhum texto reconhecido'));
+                        updateStatus('❌ Erro no reconhecimento de voz', 'error');
+                    }
+                } catch (error) {
+                    updateRecognizedText('Erro ao processar gravação');
+                    updateStatus('❌ Erro ao processar gravação', 'error');
+                    console.error('Erro:', error);
+                } finally {
+                    isListening = false;
+                    isProcessing = false;
+                    resetButton();
+                }
             }
         }
         
-        function exitApp() {
-            if (confirm('Tem certeza que deseja sair?')) {
-                fetch('/exit', { method: 'POST' })
-                    .then(() => {
-                        window.close();
-                    })
-                    .catch(() => {
-                        window.close();
-                    });
-            }
-        }
+
     </script>
 </body>
 </html>

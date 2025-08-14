@@ -8,6 +8,8 @@ from flask import Flask, render_template, request, jsonify
 import threading
 import signal
 import sys
+import time
+import queue
 
 class EVChargingFinder:
     def __init__(self):
@@ -31,6 +33,12 @@ class EVChargingFinder:
         # Initialize SQLite database
         self.db_path = 'charging_stations.db'
         self.init_database()
+        
+        # Variáveis para controle de gravação contínua
+        self.is_recording = False
+        self.recording_thread = None
+        self.audio_queue = queue.Queue()
+        self.stop_recording = threading.Event()
         
         # Initialize Flask app
         self.app = Flask(__name__)
@@ -99,34 +107,110 @@ class EVChargingFinder:
             print("\n❌ Número máximo de tentativas atingido")
             return None
     
-    def listen_for_web(self):
-        """Método simplificado para uso na interface web"""
+    def start_continuous_recording(self):
+        """Inicia gravação contínua em thread separada"""
+        if self.is_recording:
+            return
+            
+        self.is_recording = True
+        self.stop_recording.clear()
+        self.audio_queue = queue.Queue()
+        
+        def record_audio():
+            try:
+                with sr.Microphone() as source:
+                    print("🎤 Iniciando gravação contínua...")
+                    
+                    # Configurações básicas
+                    self.recognizer.dynamic_energy_threshold = False
+                    self.recognizer.energy_threshold = 300
+                    
+                    # Ajuste rápido de ruído
+                    print("🔊 Ajustando ruído ambiente...")
+                    self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                    print("✅ Pronto para gravar")
+                    
+                    # Gravar em chunks pequenos continuamente
+                    audio_data = []
+                    while not self.stop_recording.is_set():
+                        try:
+                            # Capturar chunk pequeno de áudio (1 segundo)
+                            chunk = self.recognizer.listen(source, timeout=1, phrase_time_limit=1)
+                            audio_data.append(chunk.frame_data)
+                            print("📼 Chunk gravado...")
+                        except sr.WaitTimeoutError:
+                            # Timeout é normal, continuar gravando
+                            continue
+                        except Exception as e:
+                            print(f"⚠️ Erro no chunk: {e}")
+                            continue
+                    
+                    # Combinar todos os chunks em um único áudio
+                    if audio_data:
+                        print("🔗 Combinando áudio gravado...")
+                        combined_data = b''.join(audio_data)
+                        combined_audio = sr.AudioData(combined_data, source.SAMPLE_RATE, source.SAMPLE_WIDTH)
+                        self.audio_queue.put(combined_audio)
+                        print("✅ Áudio combinado e pronto para processamento")
+                    
+            except Exception as e:
+                print(f"❌ Erro na gravação: {e}")
+                self.audio_queue.put(None)
+        
+        self.recording_thread = threading.Thread(target=record_audio, daemon=True)
+        self.recording_thread.start()
+        print("🎙️ Gravação contínua iniciada")
+    
+    def stop_continuous_recording(self):
+        """Para a gravação contínua e retorna o áudio"""
+        if not self.is_recording:
+            return None
+            
+        print("🛑 Parando gravação...")
+        self.stop_recording.set()
+        self.is_recording = False
+        
+        # Aguardar o áudio processado
         try:
-            with sr.Microphone() as source:
-                # Ajustes para captura
-                self.recognizer.dynamic_energy_threshold = False
-                self.recognizer.energy_threshold = 1000
-                self.recognizer.pause_threshold = 1.2
-                self.recognizer.phrase_threshold = 0.3
-                self.recognizer.non_speaking_duration = 1.0
+            audio = self.audio_queue.get(timeout=5)
+            if audio is None:
+                raise Exception("Erro na captura de áudio")
+            return audio
+        except queue.Empty:
+            raise Exception("Timeout ao processar áudio")
+    
+    def listen_for_web(self):
+        """Método para uso na interface web - gravação contínua controlada pelo usuário"""
+        try:
+            # Iniciar gravação contínua
+            self.start_continuous_recording()
+            
+            # Aguardar até que o usuário pare a gravação
+            # (isso será controlado pela interface web)
+            while self.is_recording:
+                time.sleep(0.1)
+            
+            # Obter o áudio gravado
+            audio = self.stop_continuous_recording()
+            
+            if audio is None:
+                raise Exception("Nenhum áudio foi capturado")
+            
+            print("🔍 Processando áudio capturado...")
+            
+            # Reconhecer comando usando Google Speech Recognition
+            command = self.recognizer.recognize_google(audio, language='pt-PT')
+            print(f"✅ Texto reconhecido: {command}")
+            return command.lower().strip()
                 
-                # Ajuste de ruído
-                self.recognizer.adjust_for_ambient_noise(source, duration=1)
-                
-                # Capturar áudio
-                audio = self.recognizer.listen(source, timeout=10, phrase_time_limit=None)
-                
-                # Reconhecer comando
-                command = self.recognizer.recognize_google(audio, language='pt-PT')
-                return command.lower()
-                
-        except sr.WaitTimeoutError:
-            raise Exception("Nenhuma fala detectada no tempo limite")
         except sr.UnknownValueError:
-            raise Exception("Não foi possível entender o áudio")
+            print("❌ Erro: Não foi possível entender o áudio")
+            raise Exception("Não foi possível entender o áudio. Tente falar mais claramente.")
         except sr.RequestError as e:
+            print(f"❌ Erro na requisição ao Google: {str(e)}")
             raise Exception(f"Erro na requisição ao Google: {str(e)}")
         except Exception as e:
+            print(f"❌ Erro inesperado: {str(e)}")
             raise Exception(f"Erro inesperado: {str(e)}")
 
     def init_database(self):
@@ -246,13 +330,50 @@ class EVChargingFinder:
         def index():
             return render_template('index.html')
         
+        @self.app.route('/start_recording', methods=['POST'])
+        def start_recording():
+            try:
+                self.start_continuous_recording()
+                return jsonify({
+                    'success': True,
+                    'message': 'Gravação iniciada'
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e)
+                })
+        
+        @self.app.route('/stop_recording', methods=['POST'])
+        def stop_recording():
+            try:
+                audio = self.stop_continuous_recording()
+                if audio is None:
+                    raise Exception("Nenhum áudio foi capturado")
+                
+                # Reconhecer o áudio
+                command = self.recognizer.recognize_google(audio, language='pt-PT')
+                print(f"✅ Texto reconhecido: {command}")
+                
+                return jsonify({
+                    'success': True,
+                    'text': command.lower().strip(),
+                    'command': command.lower().strip()
+                })
+            except Exception as e:
+                return jsonify({
+                    'success': False,
+                    'error': str(e)
+                })
+        
         @self.app.route('/listen', methods=['POST'])
         def listen():
             try:
                 command = self.listen_for_web()
                 return jsonify({
                     'success': True,
-                    'command': command
+                    'text': command,
+                    'command': command  # Manter compatibilidade
                 })
             except Exception as e:
                 return jsonify({
