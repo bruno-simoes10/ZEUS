@@ -341,58 +341,129 @@ class EVChargingFinder:
             
             return stations
     
+    def text_to_sql(self, command):
+        """Converte texto natural em query SQL usando AI local"""
+        command = command.lower().strip()
+        print(f"Convertendo comando para SQL: {command}")
+        
+        # Schema da tabela para contexto
+        schema_info = """
+        Tabela: charging_stations
+        Colunas:
+        - id (VARCHAR): Identificador único do carregador
+        - location (VARCHAR): Cidade onde está localizado
+        - address (VARCHAR): Endereço completo
+        - price (DECIMAL): Preço por kWh em euros
+        - power (INTEGER): Potência em kW
+        - available (BOOLEAN): Se está disponível
+        
+        Cidades disponíveis: Lisboa, Porto, Matosinhos, Coimbra, Braga, Aveiro, Faro, Évora, Setúbal, Leiria, Viseu
+        """
+        
+        # Padrões de conversão baseados em regras inteligentes
+        sql_patterns = {
+            # Busca por cidade específica
+            r'(?:carregador|posto|carregamento).*?(?:em|no|na|de|para)\s+(\w+)': 
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC",
+            
+            # Busca por preço
+            r'(?:mais\s+)?(?:barato|económico|menor\s+preço)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
+                lambda m: f"SELECT * FROM charging_stations {'WHERE LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY price ASC LIMIT 1",
+            
+            # Busca por potência
+            r'(?:mais\s+)?(?:rápido|potente|alta\s+potência)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
+                lambda m: f"SELECT * FROM charging_stations {'WHERE LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY power DESC LIMIT 1",
+            
+            # Busca por potência específica
+            r'(?:carregador|posto).*?(\d+)\s*kw(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
+                lambda m: f"SELECT * FROM charging_stations WHERE power >= {m.group(1)} {'AND LOWER(location) LIKE \'%' + m.group(2).lower() + '%\' ' if m.group(2) else ''}ORDER BY price ASC",
+            
+            # Busca genérica por cidade
+            r'^(\w+)$':
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC",
+            
+            # Busca por universidade/campus
+            r'(?:universidade|campus|faculdade)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%universidade%' {'AND LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY price ASC",
+            
+            # Busca por shopping/centro comercial
+            r'(?:shopping|centro\s+comercial|mall)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
+                lambda m: f"SELECT * FROM charging_stations WHERE (LOWER(address) LIKE '%shopping%' OR LOWER(address) LIKE '%forum%' OR LOWER(address) LIKE '%centro%') {'AND LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY price ASC",
+            
+            # Busca por aeroporto
+            r'(?:aeroporto|airport)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%aeroporto%' {'AND LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY price ASC"
+        }
+        
+        # Tentar encontrar padrão correspondente
+        for pattern, sql_generator in sql_patterns.items():
+            match = re.search(pattern, command)
+            if match:
+                try:
+                    sql_query = sql_generator(match)
+                    print(f"SQL gerado: {sql_query}")
+                    return sql_query
+                except Exception as e:
+                    print(f"Erro ao gerar SQL: {e}")
+                    continue
+        
+        # Fallback: busca genérica
+        print("Usando busca genérica")
+        return "SELECT * FROM charging_stations ORDER BY price ASC LIMIT 5"
+    
+    def execute_sql_query(self, sql_query):
+        """Executa query SQL e retorna resultados"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql_query)
+                
+                results = []
+                for row in cursor.fetchall():
+                    results.append({
+                        'id': row[0],
+                        'location': row[1],
+                        'address': row[2],
+                        'price': row[3],
+                        'power': row[4],
+                        'available': bool(row[5])
+                    })
+                
+                print(f"Encontrados {len(results)} carregadores")
+                return results
+                
+        except Exception as e:
+            print(f"Erro ao executar SQL: {e}")
+            return []
+    
     def extract_location(self, command):
-        # Melhorar extração de localização do comando em Português
-        command = command.lower()
-        print(f"Extraindo localização do comando: {command}")
+        """Método mantido para compatibilidade - agora usa AI para SQL"""
+        # Este método agora é um wrapper que usa o novo sistema AI
+        sql_query = self.text_to_sql(command)
+        results = self.execute_sql_query(sql_query)
         
-        # Lista de cidades disponíveis na base de dados
-        available_cities = [
-            'lisboa', 'porto', 'matosinhos', 'coimbra', 'braga', 
-            'aveiro', 'faro', 'évora', 'evora', 'setúbal', 'setubal', 
-            'leiria', 'viseu'
-        ]
-        
-        # Padrões mais flexíveis para extração de localização
-        patterns = [
-            r'(?:em|no|na|para|de)\s+([a-záàâãéêíóôõúç]+)',  # "em/no/na/para/de [cidade]"
-            r'(?:carregador|posto|carregamento)\s+(?:em|no|na|de|para)?\s*([a-záàâãéêíóôõúç]+)',  # "carregador em [cidade]"
-            r'([a-záàâãéêíóôõúç]+)\s+(?:carregador|posto|carregamento)',  # "[cidade] carregador"
-            r'(?:procurar|encontrar|buscar)\s+(?:em|no|na|de|para)?\s*([a-záàâãéêíóôõúç]+)',  # "procurar em [cidade]"
-            r'\b([a-záàâãéêíóôõúç]+)\b'  # Qualquer palavra que seja uma cidade conhecida
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, command)
-            for match in matches:
-                location = match.strip()
-                # Verificar se a localização está na lista de cidades disponíveis
-                if location in available_cities:
-                    print(f"Localização encontrada: {location}")
-                    return location
-                # Verificar variações de acentos
-                if location == 'evora' and 'évora' in available_cities:
-                    print(f"Localização encontrada (normalizada): évora")
-                    return 'évora'
-                if location == 'setubal' and 'setúbal' in available_cities:
-                    print(f"Localização encontrada (normalizada): setúbal")
-                    return 'setúbal'
+        if results:
+            # Retornar a localização do primeiro resultado
+            return results[0]['location'].lower()
         
         print("Nenhuma localização encontrada no comando")
-        print(f"Cidades disponíveis: {', '.join(available_cities)}")
         return None
 
-    def find_best_charger(self, location):
-        # Converter localização para minúsculas para garantir correspondência
-        location = location.lower()
+    def find_best_charger(self, command):
+        """Encontra o melhor carregador usando AI para interpretar o comando"""
+        print(f"Processando comando com AI: {command}")
         
-        # Buscar carregadores da localização
-        chargers = self.get_charging_stations(location)
+        # Usar AI para converter texto em SQL
+        sql_query = self.text_to_sql(command)
+        results = self.execute_sql_query(sql_query)
         
-        if chargers:
-            # Encontrar o carregador com o menor preço
-            best_charger = min(chargers, key=lambda x: x['price'])
+        if results:
+            # Retornar o primeiro resultado (já ordenado pela query SQL)
+            best_charger = results[0]
+            print(f"Melhor carregador encontrado: {best_charger['id']} em {best_charger['location']}")
             return best_charger
+        
+        print("Nenhum carregador encontrado")
         return None
 
     def speak_response(self, text):
@@ -496,33 +567,54 @@ class EVChargingFinder:
                 data = request.get_json()
                 command = data.get('command', '')
                 
-                location = self.extract_location(command)
+                if not command.strip():
+                    error_msg = "Por favor, diga um comando válido"
+                    self.speak_response(error_msg)
+                    return jsonify({
+                        'success': False,
+                        'error': error_msg
+                    })
                 
-                if location:
-                    best_charger = self.find_best_charger(location)
-                    
-                    if best_charger:
-                        response_text = (f"O melhor posto de carregamento em {location} "
-                                       f"está em {best_charger['address']} "
+                # Usar AI para processar o comando completo
+                best_charger = self.find_best_charger(command)
+                
+                if best_charger:
+                    # Gerar resposta inteligente baseada no tipo de busca
+                    if 'barato' in command.lower() or 'económico' in command.lower():
+                        response_text = (f"O carregador mais barato encontrado está em {best_charger['location']}, "
+                                       f"localizado em {best_charger['address']}, "
                                        f"com um preço de {best_charger['price']} euros por kWh")
-                        
-                        # Falar a resposta
-                        self.speak_response(response_text)
-                        
-                        return jsonify({
-                            'success': True,
-                            'charger': best_charger,
-                            'message': response_text
-                        })
+                    elif 'rápido' in command.lower() or 'potente' in command.lower():
+                        response_text = (f"O carregador mais rápido encontrado está em {best_charger['location']}, "
+                                       f"localizado em {best_charger['address']}, "
+                                       f"com {best_charger['power']} kW de potência e preço de {best_charger['price']} euros por kWh")
+                    elif 'universidade' in command.lower() or 'campus' in command.lower():
+                        response_text = (f"Encontrei um carregador na universidade em {best_charger['location']}, "
+                                       f"localizado em {best_charger['address']}, "
+                                       f"com preço de {best_charger['price']} euros por kWh")
+                    elif 'shopping' in command.lower() or 'centro comercial' in command.lower():
+                        response_text = (f"Encontrei um carregador no shopping em {best_charger['location']}, "
+                                       f"localizado em {best_charger['address']}, "
+                                       f"com preço de {best_charger['price']} euros por kWh")
+                    elif 'aeroporto' in command.lower():
+                        response_text = (f"Encontrei um carregador no aeroporto em {best_charger['location']}, "
+                                       f"localizado em {best_charger['address']}, "
+                                       f"com preço de {best_charger['price']} euros por kWh")
                     else:
-                        error_msg = f"Desculpe, não encontrei nenhum posto de carregamento em {location}"
-                        self.speak_response(error_msg)
-                        return jsonify({
-                            'success': False,
-                            'error': error_msg
-                        })
+                        response_text = (f"O melhor carregador encontrado está em {best_charger['location']}, "
+                                       f"localizado em {best_charger['address']}, "
+                                       f"com um preço de {best_charger['price']} euros por kWh")
+                    
+                    # Falar a resposta
+                    self.speak_response(response_text)
+                    
+                    return jsonify({
+                        'success': True,
+                        'charger': best_charger,
+                        'message': response_text
+                    })
                 else:
-                    error_msg = "Por favor, especifique uma localização em Portugal"
+                    error_msg = "Desculpe, não encontrei nenhum carregador que corresponda ao seu pedido"
                     self.speak_response(error_msg)
                     return jsonify({
                         'success': False,
@@ -530,9 +622,10 @@ class EVChargingFinder:
                     })
                     
             except Exception as e:
+                error_msg = f"Erro ao processar comando: {str(e)}"
                 return jsonify({
                     'success': False,
-                    'error': str(e)
+                    'error': error_msg
                 })
         
         @self.app.route('/exit', methods=['POST'])
@@ -574,21 +667,26 @@ class EVChargingFinder:
             command = self.listen_for_command()
             
             if command:
-                location = self.extract_location(command)
+                best_charger = self.find_best_charger(command)
                 
-                if location:
-                    best_charger = self.find_best_charger(location)
-                    
-                    if best_charger:
-                        response = (f"O melhor posto de carregamento em {location} "
-                                  f"está em {best_charger['address']} "
+                if best_charger:
+                    # Gerar resposta inteligente baseada no tipo de busca
+                    if 'barato' in command.lower() or 'económico' in command.lower():
+                        response = (f"O carregador mais barato encontrado está em {best_charger['location']}, "
+                                  f"localizado em {best_charger['address']}, "
                                   f"com um preço de {best_charger['price']} euros por kWh")
+                    elif 'rápido' in command.lower() or 'potente' in command.lower():
+                        response = (f"O carregador mais rápido encontrado está em {best_charger['location']}, "
+                                  f"localizado em {best_charger['address']}, "
+                                  f"com {best_charger['power']} kW de potência e preço de {best_charger['price']} euros por kWh")
                     else:
-                        response = f"Desculpe, não encontrei nenhum posto de carregamento em {location}"
-                    
-                    self.speak_response(response)
+                        response = (f"O melhor carregador encontrado está em {best_charger['location']}, "
+                                  f"localizado em {best_charger['address']}, "
+                                  f"com um preço de {best_charger['price']} euros por kWh")
                 else:
-                    self.speak_response("Por favor, especifique uma localização em Portugal")
+                    response = "Desculpe, não encontrei nenhum carregador que corresponda ao seu pedido"
+                
+                self.speak_response(response)
             
             print("\nPressione Enter para pesquisar novamente ou 'q' para sair")
             if input().lower() == 'q':
