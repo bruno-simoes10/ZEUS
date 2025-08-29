@@ -362,21 +362,25 @@ class EVChargingFinder:
         
         # Padrões de conversão baseados em regras inteligentes
         sql_patterns = {
+            # Busca por "em cidade" (mais específico)
+            r'(?:em|no|na|de|para)\s+(\w+)':
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC",
+            
             # Busca por cidade específica
             r'(?:carregador|posto|carregamento).*?(?:em|no|na|de|para)\s+(\w+)': 
                 lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC",
             
             # Busca por preço
             r'(?:mais\s+)?(?:barato|económico|menor\s+preço)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations {'WHERE LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY price ASC LIMIT 1",
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY price ASC LIMIT 1" if m.group(1) else "SELECT * FROM charging_stations ORDER BY price ASC LIMIT 1",
             
             # Busca por potência
             r'(?:mais\s+)?(?:rápido|potente|alta\s+potência)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations {'WHERE LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY power DESC LIMIT 1",
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY power DESC LIMIT 1" if m.group(1) else "SELECT * FROM charging_stations ORDER BY power DESC LIMIT 1",
             
             # Busca por potência específica
             r'(?:carregador|posto).*?(\d+)\s*kw(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE power >= {m.group(1)} {'AND LOWER(location) LIKE \'%' + m.group(2).lower() + '%\' ' if m.group(2) else ''}ORDER BY price ASC",
+                lambda m: f"SELECT * FROM charging_stations WHERE power >= {m.group(1)} AND LOWER(location) LIKE '%{m.group(2).lower() if m.group(2) else ''}%' ORDER BY price ASC" if m.group(2) else f"SELECT * FROM charging_stations WHERE power >= {m.group(1)} ORDER BY price ASC",
             
             # Busca genérica por cidade
             r'^(\w+)$':
@@ -384,15 +388,15 @@ class EVChargingFinder:
             
             # Busca por universidade/campus
             r'(?:universidade|campus|faculdade)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%universidade%' {'AND LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY price ASC",
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%universidade%' AND LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY price ASC" if m.group(1) else "SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%universidade%' ORDER BY price ASC",
             
             # Busca por shopping/centro comercial
             r'(?:shopping|centro\s+comercial|mall)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE (LOWER(address) LIKE '%shopping%' OR LOWER(address) LIKE '%forum%' OR LOWER(address) LIKE '%centro%') {'AND LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY price ASC",
+                lambda m: f"SELECT * FROM charging_stations WHERE (LOWER(address) LIKE '%shopping%' OR LOWER(address) LIKE '%forum%' OR LOWER(address) LIKE '%centro%') AND LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY price ASC" if m.group(1) else "SELECT * FROM charging_stations WHERE (LOWER(address) LIKE '%shopping%' OR LOWER(address) LIKE '%forum%' OR LOWER(address) LIKE '%centro%') ORDER BY price ASC",
             
             # Busca por aeroporto
             r'(?:aeroporto|airport)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%aeroporto%' {'AND LOWER(location) LIKE \'%' + m.group(1).lower() + '%\' ' if m.group(1) else ''}ORDER BY price ASC"
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%aeroporto%' AND LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY price ASC" if m.group(1) else "SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%aeroporto%' ORDER BY price ASC"
         }
         
         # Tentar encontrar padrão correspondente
@@ -650,11 +654,11 @@ class EVChargingFinder:
     def run_web(self):
         """Executar interface web Flask"""
         print("🌐 Iniciando interface web...")
-        print("📱 Acesse: http://localhost:8000")
+        print("📱 Acesse: http://localhost:8002")
         print("🛑 Para parar: Ctrl+C ou use o botão 'Sair' na interface")
         
         try:
-            self.app.run(host='0.0.0.0', port=8000, debug=False)
+            self.app.run(host='0.0.0.0', port=8002, debug=False)
         except KeyboardInterrupt:
             print("\n🛑 Servidor parado pelo usuário")
         except Exception as e:
