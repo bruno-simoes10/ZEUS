@@ -362,9 +362,13 @@ class EVChargingFinder:
         
         # Padrões de conversão baseados em regras inteligentes
         sql_patterns = {
-            # Busca por "em cidade" (mais específico)
-            r'(?:em|no|na|de|para)\s+(\w+)':
+            # Busca por "em cidade" ou "do/da cidade" (mais específico)
+            r'(?:em|no|na|de|para|do|da)\s+(\w+)':
                 lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC",
+            
+            # Busca por "melhor carregador do/da cidade"
+            r'(?:melhor|bom).*?(?:carregador|posto).*?(?:do|da)\s+(\w+)':
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC LIMIT 1",
             
             # Busca por cidade específica
             r'(?:carregador|posto|carregamento).*?(?:em|no|na|de|para)\s+(\w+)': 
