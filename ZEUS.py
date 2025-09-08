@@ -10,6 +10,11 @@ import signal
 import sys
 import time
 import queue
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente do arquivo .env
+load_dotenv()
 
 class EVChargingFinder:
     def __init__(self):
@@ -29,6 +34,20 @@ class EVChargingFinder:
                 self.tts_engine.setProperty('voice', voice.id)
                 break
         self.tts_engine.setProperty('rate', 150)
+        
+        # Inicializar cliente OpenAI
+        self.openai_client = None
+        self.openai_api_key = os.getenv('OPENAI_API_KEY')
+        if self.openai_api_key:
+            try:
+                self.openai_client = OpenAI(api_key=self.openai_api_key)
+                print("✅ Cliente OpenAI inicializado com sucesso!")
+            except Exception as e:
+                print(f"⚠️ Erro ao inicializar OpenAI: {e}")
+                print("💡 Usando sistema de regex como fallback")
+        else:
+            print("⚠️ OPENAI_API_KEY não encontrada nas variáveis de ambiente")
+            print("💡 Usando sistema de regex como fallback")
         
         # Initialize SQLite database
         self.db_path = 'charging_stations.db'
@@ -341,24 +360,79 @@ class EVChargingFinder:
             
             return stations
     
-    def text_to_sql(self, command):
-        """Converte texto natural em query SQL usando AI local"""
+    def text_to_sql_with_chatgpt(self, command):
+        """Converte texto natural em query SQL usando ChatGPT"""
+        if not self.openai_client:
+            print("🔄 OpenAI não disponível, usando sistema de regex")
+            return self.text_to_sql_regex(command)
+        
+        try:
+            # Prompt engineering para gerar SQL preciso
+            system_prompt = """
+            Você é um especialista em SQL que converte comandos em português para queries SQL precisas.
+            
+            SCHEMA DA BASE DE DADOS:
+            Tabela: charging_stations
+            Colunas:
+            - id (VARCHAR): Identificador único do carregador (ex: 'MOBI-LIS-001')
+            - location (VARCHAR): Cidade onde está localizado
+            - address (VARCHAR): Endereço completo
+            - price (DECIMAL): Preço por kWh em euros
+            - power (INTEGER): Potência em kW
+            - available (BOOLEAN): Se está disponível (sempre true)
+            
+            CIDADES DISPONÍVEIS: Lisboa, Porto, Matosinhos, Coimbra, Braga, Aveiro, Faro, Évora, Setúbal, Leiria, Viseu
+            
+            REGRAS IMPORTANTES:
+            1. SEMPRE retorne apenas a query SQL, sem explicações
+            2. Use LOWER() para comparações de texto insensíveis a maiúsculas
+            3. Use LIKE '%termo%' para buscas parciais
+            4. Para "melhor" ou "mais barato": ORDER BY price ASC LIMIT 1
+            5. Para "mais rápido" ou "mais potente": ORDER BY power DESC LIMIT 1
+            6. Para busca por cidade: WHERE LOWER(location) LIKE '%cidade%'
+            7. Para busca por potência específica: WHERE power >= valor
+            8. Se não especificar cidade, não adicione filtro de localização
+            9. Sempre inclua ORDER BY para resultados consistentes
+            10. Use LIMIT quando apropriado para evitar muitos resultados
+            
+            EXEMPLOS:
+            "melhor carregador em Lisboa" → SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%lisboa%' ORDER BY price ASC LIMIT 1
+            "carregador mais rápido" → SELECT * FROM charging_stations ORDER BY power DESC LIMIT 1
+            "carregadores no Porto" → SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%porto%' ORDER BY price ASC
+            """
+            
+            user_prompt = f"Converta este comando para SQL: {command}"
+            
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=200,
+                temperature=0.1
+            )
+            
+            sql_query = response.choices[0].message.content.strip()
+            
+            # Limpar a resposta (remover markdown se presente)
+            if sql_query.startswith('```sql'):
+                sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
+            elif sql_query.startswith('```'):
+                sql_query = sql_query.replace('```', '').strip()
+            
+            print(f"🤖 SQL gerado pelo ChatGPT: {sql_query}")
+            return sql_query
+            
+        except Exception as e:
+            print(f"❌ Erro ao usar ChatGPT: {e}")
+            print("🔄 Usando sistema de regex como fallback")
+            return self.text_to_sql_regex(command)
+    
+    def text_to_sql_regex(self, command):
+        """Converte texto natural em query SQL usando regex (sistema original)"""
         command = command.lower().strip()
-        print(f"Convertendo comando para SQL: {command}")
-        
-        # Schema da tabela para contexto
-        schema_info = """
-        Tabela: charging_stations
-        Colunas:
-        - id (VARCHAR): Identificador único do carregador
-        - location (VARCHAR): Cidade onde está localizado
-        - address (VARCHAR): Endereço completo
-        - price (DECIMAL): Preço por kWh em euros
-        - power (INTEGER): Potência em kW
-        - available (BOOLEAN): Se está disponível
-        
-        Cidades disponíveis: Lisboa, Porto, Matosinhos, Coimbra, Braga, Aveiro, Faro, Évora, Setúbal, Leiria, Viseu
-        """
+        print(f"Convertendo comando para SQL com regex: {command}")
         
         # Padrões de conversão baseados em regras inteligentes
         sql_patterns = {
@@ -418,6 +492,10 @@ class EVChargingFinder:
         # Fallback: busca genérica
         print("Usando busca genérica")
         return "SELECT * FROM charging_stations ORDER BY price ASC LIMIT 5"
+    
+    def text_to_sql(self, command):
+        """Função principal que decide qual sistema usar (ChatGPT ou regex)"""
+        return self.text_to_sql_with_chatgpt(command)
     
     def execute_sql_query(self, sql_query):
         """Executa query SQL e retorna resultados"""
@@ -652,6 +730,8 @@ class EVChargingFinder:
         """Executar o sistema em modo web ou linha de comando"""
         if mode == 'web':
             self.run_web()
+        elif mode == 'text':
+            self.run_text()
         else:
             self.run_console()
     
@@ -669,7 +749,7 @@ class EVChargingFinder:
             print(f"❌ Erro no servidor: {e}")
     
     def run_console(self):
-        """Executar em modo linha de comando (original)"""
+        """Executar em modo linha de comando (original com voz)"""
         while True:
             print("Diga o seu comando...")  # "Say your command..." in Portuguese
             command = self.listen_for_command()
@@ -699,6 +779,54 @@ class EVChargingFinder:
             print("\nPressione Enter para pesquisar novamente ou 'q' para sair")
             if input().lower() == 'q':
                 break
+    
+    def run_text(self):
+        """Executar em modo texto (com voz na saída)"""
+        print("\n🖊️  Modo Texto Ativado - Digite seus comandos! (com voz na saída)")
+        print("💡 Exemplos: 'melhor carregador em Lisboa', 'carregador mais barato no Porto', 'carregadores em Coimbra'")
+        print("🚪 Digite 'sair' ou 'q' para terminar\n")
+        
+        while True:
+            try:
+                command = input("➤ Digite seu comando: ").strip()
+                
+                if not command:
+                    continue
+                    
+                if command.lower() in ['sair', 'q', 'quit', 'exit']:
+                    print("👋 Até logo!")
+                    break
+                
+                print(f"🔍 Processando: '{command}'...")
+                best_charger = self.find_best_charger(command)
+                
+                if best_charger:
+                    # Gerar resposta inteligente baseada no tipo de busca
+                    if 'barato' in command.lower() or 'económico' in command.lower():
+                        response = (f"💰 O carregador mais barato encontrado está em {best_charger['location']}, "
+                                  f"localizado em {best_charger['address']}, "
+                                  f"com um preço de {best_charger['price']} euros por kWh")
+                    elif 'rápido' in command.lower() or 'potente' in command.lower():
+                        response = (f"⚡ O carregador mais rápido encontrado está em {best_charger['location']}, "
+                                  f"localizado em {best_charger['address']}, "
+                                  f"com {best_charger['power']} kW de potência e preço de {best_charger['price']} euros por kWh")
+                    else:
+                        response = (f"🎯 O melhor carregador encontrado está em {best_charger['location']}, "
+                                  f"localizado em {best_charger['address']}, "
+                                  f"com um preço de {best_charger['price']} euros por kWh")
+                else:
+                    response = "❌ Desculpe, não encontrei nenhum carregador que corresponda ao seu pedido"
+                
+                print(f"\n✅ {response}\n")
+                
+                # Adicionar saída de voz
+                self.speak_response(response)
+                
+            except KeyboardInterrupt:
+                print("\n\n👋 Interrompido pelo utilizador. Até logo!")
+                break
+            except Exception as e:
+                print(f"\n❌ Erro: {e}\n")
 
 if __name__ == "__main__":
     import sys
@@ -706,10 +834,29 @@ if __name__ == "__main__":
     finder = EVChargingFinder()
     
     # Verificar argumentos de linha de comando
-    if len(sys.argv) > 1 and sys.argv[1] == '--console':
-        print("🎤 Iniciando modo linha de comando...")
-        finder.run(mode='console')
+    if len(sys.argv) > 1:
+        if sys.argv[1] == '--console':
+            print("🎤 Iniciando modo linha de comando (com voz)...")
+            finder.run(mode='console')
+        elif sys.argv[1] == '--text':
+            print("🖊️  Iniciando modo texto (com voz na saída)...")
+            finder.run(mode='text')
+        elif sys.argv[1] == '--help' or sys.argv[1] == '-h':
+            print("\n🚀 ZEUS - Sistema de Busca de Carregadores EV")
+            print("\n📋 Modos disponíveis:")
+            print("   python ZEUS.py              → Interface web (com voz na saída)")
+            print("   python ZEUS.py --console    → Modo voz (microfone + fala)")
+            print("   python ZEUS.py --text       → Modo texto (digitação + voz na saída)")
+            print("   python ZEUS.py --help       → Mostrar esta ajuda")
+            print("\n💡 Exemplos de comandos:")
+            print("   • 'melhor carregador em Lisboa'")
+            print("   • 'carregador mais barato no Porto'")
+            print("   • 'carregadores em Coimbra'")
+            print("   • 'carregador mais rápido'\n")
+        else:
+            print(f"❌ Opção desconhecida: {sys.argv[1]}")
+            print("💡 Use 'python ZEUS.py --help' para ver as opções disponíveis")
     else:
         print("🌐 Iniciando modo interface web...")
-        print("💡 Para usar modo linha de comando: python3 ZEUS.py --console")
+        print("💡 Outros modos: --console (voz completa) | --text (digitação + voz) | --help")
         finder.run(mode='web')

@@ -16,3 +16,6 @@ env/
 .idea/
 *.swp
 .DS_Store
+
+# OpenAI API Key
+.env
