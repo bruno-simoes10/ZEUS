@@ -12,14 +12,619 @@ import time
 import queue
 from openai import OpenAI
 from dotenv import load_dotenv
+import datetime
+import pickle
+import hashlib
+from collections import defaultdict
+import difflib
+import time
+import json
 
 # Carregar variáveis de ambiente do arquivo .env
 load_dotenv()
 
-class EVChargingFinder:
+# === SISTEMA DE MÉTRICAS E ANALYTICS (MELHORIA 10) ===
+class PerformanceAnalytics:
+    """Sistema de métricas e analytics de performance"""
+    
+    def __init__(self, metrics_file='performance_metrics.json'):
+        self.metrics_file = metrics_file
+        self.metrics = self.load_metrics()
+        self.session_start = time.time()
+        
+    def load_metrics(self):
+        """Carregar métricas existentes"""
+        try:
+            with open(self.metrics_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {
+                'total_queries': 0,
+                'total_response_time': 0.0,
+                'query_frequency': {},
+                'error_count': 0,
+                'cache_hits': 0,
+                'cache_misses': 0,
+                'correction_count': 0,
+                'daily_stats': {},
+                'response_times': [],
+                'popular_locations': {},
+                'session_count': 0
+            }
+            
+    def save_metrics(self):
+        """Salvar métricas no arquivo"""
+        try:
+            with open(self.metrics_file, 'w', encoding='utf-8') as f:
+                json.dump(self.metrics, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"❌ Erro ao salvar métricas: {e}")
+            
+    def record_query(self, query, response_time, success=True, cache_hit=False, corrections_made=0):
+        """Registrar uma consulta e suas métricas"""
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+        
+        # Estatísticas gerais
+        self.metrics['total_queries'] += 1
+        self.metrics['total_response_time'] += response_time
+        self.metrics['response_times'].append(response_time)
+        
+        # Manter apenas os últimos 1000 tempos de resposta
+        if len(self.metrics['response_times']) > 1000:
+            self.metrics['response_times'] = self.metrics['response_times'][-1000:]
+            
+        # Frequência de consultas
+        query_key = query.lower().strip()
+        self.metrics['query_frequency'][query_key] = self.metrics['query_frequency'].get(query_key, 0) + 1
+        
+        # Cache statistics
+        if cache_hit:
+            self.metrics['cache_hits'] += 1
+        else:
+            self.metrics['cache_misses'] += 1
+            
+        # Correções
+        self.metrics['correction_count'] += corrections_made
+        
+        # Erros
+        if not success:
+            self.metrics['error_count'] += 1
+            
+        # Estatísticas diárias
+        if today not in self.metrics['daily_stats']:
+            self.metrics['daily_stats'][today] = {
+                'queries': 0,
+                'avg_response_time': 0.0,
+                'errors': 0,
+                'cache_hits': 0
+            }
+            
+        daily = self.metrics['daily_stats'][today]
+        daily['queries'] += 1
+        daily['avg_response_time'] = (daily['avg_response_time'] * (daily['queries'] - 1) + response_time) / daily['queries']
+        
+        if not success:
+            daily['errors'] += 1
+        if cache_hit:
+            daily['cache_hits'] += 1
+            
+        # Extrair localização da consulta para estatísticas
+        self._extract_location_stats(query)
+        
+        # Salvar métricas
+        self.save_metrics()
+        
+    def _extract_location_stats(self, query):
+        """Extrair e registrar estatísticas de localização"""
+        locations = ['lisboa', 'porto', 'coimbra', 'braga', 'aveiro', 'faro', 'évora', 'setúbal', 'leiria', 'viseu']
+        query_lower = query.lower()
+        
+        for location in locations:
+            if location in query_lower:
+                self.metrics['popular_locations'][location] = self.metrics['popular_locations'].get(location, 0) + 1
+                break
+                
+    def get_performance_report(self):
+        """Gerar relatório de performance"""
+        if self.metrics['total_queries'] == 0:
+            return "📊 Nenhuma consulta registrada ainda."
+            
+        avg_response_time = self.metrics['total_response_time'] / self.metrics['total_queries']
+        cache_hit_rate = (self.metrics['cache_hits'] / (self.metrics['cache_hits'] + self.metrics['cache_misses'])) * 100 if (self.metrics['cache_hits'] + self.metrics['cache_misses']) > 0 else 0
+        error_rate = (self.metrics['error_count'] / self.metrics['total_queries']) * 100
+        
+        # Top 5 consultas mais frequentes
+        top_queries = sorted(self.metrics['query_frequency'].items(), key=lambda x: x[1], reverse=True)[:5]
+        
+        # Top 5 localizações mais populares
+        top_locations = sorted(self.metrics['popular_locations'].items(), key=lambda x: x[1], reverse=True)[:5]
+        
+        # Estatísticas de tempo de resposta
+        response_times = self.metrics['response_times']
+        if response_times:
+            min_time = min(response_times)
+            max_time = max(response_times)
+            median_time = sorted(response_times)[len(response_times)//2] if response_times else 0
+        else:
+            min_time = max_time = median_time = 0
+            
+        report = f"""
+📊 **RELATÓRIO DE PERFORMANCE ZEUS**
+
+🔢 **Estatísticas Gerais:**
+• Total de consultas: {self.metrics['total_queries']}
+• Tempo médio de resposta: {avg_response_time:.2f}s
+• Tempo mínimo: {min_time:.2f}s
+• Tempo máximo: {max_time:.2f}s
+• Tempo mediano: {median_time:.2f}s
+
+💾 **Cache Performance:**
+• Taxa de acerto: {cache_hit_rate:.1f}%
+• Cache hits: {self.metrics['cache_hits']}
+• Cache misses: {self.metrics['cache_misses']}
+
+❌ **Erros:**
+• Taxa de erro: {error_rate:.1f}%
+• Total de erros: {self.metrics['error_count']}
+
+🔧 **Correções:**
+• Total de correções aplicadas: {self.metrics['correction_count']}
+
+🔥 **Top 5 Consultas:**
+"""
+        
+        for i, (query, count) in enumerate(top_queries, 1):
+            report += f"   {i}. \"{query[:50]}...\" ({count}x)\n"
+            
+        report += "\n🌍 **Localizações Mais Populares:**\n"
+        for i, (location, count) in enumerate(top_locations, 1):
+            report += f"   {i}. {location.title()} ({count} consultas)\n"
+            
+        return report
+        
+    def get_daily_stats(self, days=7):
+        """Obter estatísticas dos últimos N dias"""
+        today = datetime.datetime.now()
+        stats = []
+        
+        for i in range(days):
+            date = (today - datetime.timedelta(days=i)).strftime('%Y-%m-%d')
+            if date in self.metrics['daily_stats']:
+                day_stats = self.metrics['daily_stats'][date]
+                stats.append({
+                    'date': date,
+                    'queries': day_stats['queries'],
+                    'avg_response_time': day_stats['avg_response_time'],
+                    'errors': day_stats['errors'],
+                    'cache_hits': day_stats['cache_hits']
+                })
+            else:
+                stats.append({
+                    'date': date,
+                    'queries': 0,
+                    'avg_response_time': 0,
+                    'errors': 0,
+                    'cache_hits': 0
+                })
+                
+        return stats
+        
+    def start_session(self):
+        """Iniciar nova sessão"""
+        self.session_start = time.time()
+        self.metrics['session_count'] += 1
+        self.save_metrics()
+        
+    def get_session_time(self):
+        """Obter tempo da sessão atual"""
+        return time.time() - self.session_start
+
+# === SISTEMA DE VALIDAÇÃO E CORREÇÃO AUTOMÁTICA (MELHORIA 9) ===
+class TextCorrector:
+    """Sistema de correção automática de erros de digitação"""
+    
     def __init__(self):
+        # Dicionário de palavras-chave válidas do domínio
+        self.valid_words = {
+            # Localizações
+            'lisboa', 'porto', 'coimbra', 'braga', 'aveiro', 'faro', 'évora', 
+            'setúbal', 'leiria', 'viseu', 'matosinhos', 'portimão', 'lagos',
+            'viana', 'vila real', 'beja', 'santarém', 'castelo branco',
+            
+            # Termos de carregamento
+            'carregador', 'carregadores', 'posto', 'postos', 'estação', 'estações',
+            'ponto', 'pontos', 'terminal', 'terminais', 'tomada', 'tomadas',
+            'carregamento', 'carregar', 'recarregar', 'abastecer',
+            
+            # Qualificadores
+            'barato', 'económico', 'econômico', 'rápido', 'potente', 'veloz',
+            'disponível', 'livre', 'aberto', 'funcional', 'operacional', 'ativo',
+            'melhor', 'bom', 'boa', 'excelente', 'óptimo', 'ótimo',
+            
+            # Conectores e tipos
+            'type', 'tipo', 'mennekes', 'chademo', 'ccs', 'combo',
+            'corrente', 'alternada', 'contínua', 'fast', 'charge',
+            
+            # Redes
+            'mobie', 'mobiE', 'galp', 'electric', 'edp', 'comercial', 'tesla', 'supercharger',
+            
+            # Preposições e conectores
+            'em', 'no', 'na', 'de', 'do', 'da', 'para', 'até', 'a', 'com', 'sem',
+            'perto', 'próximo', 'junto', 'lado', 'redondezas', 'proximidades',
+            'preciso', 'necessito', 'quero', 'gostaria', 'desejo', 'procuro',
+            'há', 'existe', 'tem', 'encontro', 'onde', 'aonde',
+            
+            # Números e unidades
+            'kw', 'kilowatt', 'quilowatt', 'euros', 'euro', 'km', 'quilómetros', 'quilometros',
+            
+            # Outros
+            'carro', 'veículo', 'automóvel', 'viatura', 'elétrico', 'ev',
+            'urgente', 'já', 'agora', 'imediatamente', 'neste', 'momento', 'atualmente',
+            'norte', 'centro', 'sul', 'algarve', 'alentejo', 'região', 'zona', 'área',
+            'universidade', 'campus', 'faculdade', 'shopping', 'mall', 'aeroporto', 'airport'
+        }
+        
+        # Correções comuns específicas
+        self.common_corrections = {
+            'lixboa': 'lisboa',
+            'lisbao': 'lisboa',
+            'lisbon': 'lisboa',
+            'poto': 'porto',
+            'oporto': 'porto',
+            'coimbr': 'coimbra',
+            'coimbra': 'coimbra',
+            'brag': 'braga',
+            'avero': 'aveiro',
+            'fro': 'faro',
+            'evora': 'évora',
+            'setubal': 'setúbal',
+            'leria': 'leiria',
+            'visu': 'viseu',
+            'carregadro': 'carregador',
+            'carregadore': 'carregadores',
+            'posto': 'posto',
+            'estacão': 'estação',
+            'barato': 'barato',
+            'economico': 'económico',
+            'rapido': 'rápido',
+            'disponivel': 'disponível',
+            'livre': 'livre',
+            'melhor': 'melhor',
+            'proximo': 'próximo',
+            'perto': 'perto'
+        }
+        
+    def correct_text(self, text):
+        """Corrigir texto automaticamente"""
+        if not text or len(text.strip()) == 0:
+            return text
+            
+        original_text = text
+        words = text.lower().split()
+        corrected_words = []
+        corrections_made = []
+        
+        for word in words:
+            # Remover pontuação para análise
+            clean_word = ''.join(c for c in word if c.isalnum())
+            
+            if not clean_word:
+                corrected_words.append(word)
+                continue
+                
+            # Verificar correções específicas primeiro
+            if clean_word in self.common_corrections:
+                corrected = self.common_corrections[clean_word]
+                corrected_words.append(corrected)
+                corrections_made.append(f"{clean_word} → {corrected}")
+                continue
+                
+            # Verificar se a palavra já está correta
+            if clean_word in self.valid_words:
+                corrected_words.append(word)
+                continue
+                
+            # Tentar encontrar palavra similar
+            suggestion = self._find_best_match(clean_word)
+            if suggestion and suggestion != clean_word:
+                corrected_words.append(suggestion)
+                corrections_made.append(f"{clean_word} → {suggestion}")
+            else:
+                corrected_words.append(word)
+                
+        corrected_text = ' '.join(corrected_words)
+        
+        # Mostrar correções se houver
+        if corrections_made:
+            print(f"🔧 Correções aplicadas: {', '.join(corrections_made)}")
+            print(f"📝 Texto original: {original_text}")
+            print(f"✅ Texto corrigido: {corrected_text}")
+            
+        return corrected_text
+        
+    def _find_best_match(self, word):
+        """Encontrar a melhor correspondência para uma palavra"""
+        if len(word) < 3:  # Palavras muito curtas não são corrigidas
+            return word
+            
+        # Usar difflib para encontrar correspondências próximas
+        matches = difflib.get_close_matches(
+            word, 
+            self.valid_words, 
+            n=1, 
+            cutoff=0.6  # 60% de similaridade mínima
+        )
+        
+        if matches:
+            return matches[0]
+            
+        return word
+        
+    def suggest_corrections(self, text):
+        """Sugerir correções sem aplicá-las automaticamente"""
+        words = text.lower().split()
+        suggestions = []
+        
+        for word in words:
+            clean_word = ''.join(c for c in word if c.isalnum())
+            
+            if clean_word and clean_word not in self.valid_words:
+                suggestion = self._find_best_match(clean_word)
+                if suggestion and suggestion != clean_word:
+                    suggestions.append({
+                        'original': clean_word,
+                        'suggestion': suggestion,
+                        'confidence': difflib.SequenceMatcher(None, clean_word, suggestion).ratio()
+                    })
+                    
+        return suggestions
+
+# === SISTEMA DE CACHE INTELIGENTE (MELHORIA 8) ===
+class QueryCache:
+    """Sistema de cache para consultas frequentes"""
+    
+    def __init__(self, cache_file='query_cache.pkl', max_size=100):
+        self.cache_file = cache_file
+        self.max_size = max_size
+        self.cache = self.load_cache()
+        self.query_stats = defaultdict(int)
+        
+    def load_cache(self):
+        """Carregar cache de consultas"""
+        try:
+            with open(self.cache_file, 'rb') as f:
+                return pickle.load(f)
+        except (FileNotFoundError, EOFError):
+            return {}
+            
+    def save_cache(self):
+        """Salvar cache de consultas"""
+        with open(self.cache_file, 'wb') as f:
+            pickle.dump(self.cache, f)
+            
+    def _generate_key(self, query):
+        """Gerar chave única para a consulta"""
+        return hashlib.md5(query.lower().strip().encode()).hexdigest()
+        
+    def get(self, query):
+        """Obter resultado do cache"""
+        key = self._generate_key(query)
+        if key in self.cache:
+            # Atualizar timestamp de último acesso
+            self.cache[key]['last_accessed'] = datetime.datetime.now().isoformat()
+            self.cache[key]['access_count'] += 1
+            print(f"📋 Cache hit para consulta: {query[:50]}...")
+            return self.cache[key]['result']
+        return None
+        
+    def set(self, query, result):
+        """Armazenar resultado no cache"""
+        key = self._generate_key(query)
+        
+        # Limpar cache se atingir tamanho máximo
+        if len(self.cache) >= self.max_size:
+            self._cleanup_cache()
+            
+        self.cache[key] = {
+            'query': query,
+            'result': result,
+            'created': datetime.datetime.now().isoformat(),
+            'last_accessed': datetime.datetime.now().isoformat(),
+            'access_count': 1
+        }
+        self.save_cache()
+        print(f"💾 Resultado armazenado no cache para: {query[:50]}...")
+        
+    def _cleanup_cache(self):
+        """Limpar entradas menos utilizadas do cache"""
+        # Ordenar por frequência de acesso e remover 20% das menos utilizadas
+        sorted_items = sorted(self.cache.items(), key=lambda x: x[1]['access_count'])
+        items_to_remove = int(len(sorted_items) * 0.2)
+        
+        for i in range(items_to_remove):
+            del self.cache[sorted_items[i][0]]
+            
+        print(f"🧹 Cache limpo: removidas {items_to_remove} entradas")
+        
+    def get_stats(self):
+        """Obter estatísticas do cache"""
+        total_entries = len(self.cache)
+        total_accesses = sum(entry['access_count'] for entry in self.cache.values())
+        
+        return {
+            'total_entries': total_entries,
+            'total_accesses': total_accesses,
+            'cache_size': f"{total_entries}/{self.max_size}"
+        }
+
+# === SISTEMA DE APRENDIZAGEM (MELHORIA 6) ===
+class PatternLearner:
+    """Sistema de aprendizagem para padrões não reconhecidos"""
+    
+    def __init__(self, log_file='unmatched_patterns.pkl'):
+        self.log_file = log_file
+        self.unmatched_commands = self.load_logs()
+        
+    def load_logs(self):
+        """Carregar logs de comandos não reconhecidos"""
+        try:
+            with open(self.log_file, 'rb') as f:
+                return pickle.load(f)
+        except (FileNotFoundError, EOFError):
+            return []
+            
+    def save_logs(self):
+        """Salvar logs de comandos não reconhecidos"""
+        with open(self.log_file, 'wb') as f:
+            pickle.dump(self.unmatched_commands, f)
+            
+    def log_unmatched(self, command, context=None):
+        """Registar comando que não foi reconhecido"""
+        entry = {
+            'command': command,
+            'timestamp': datetime.datetime.now().isoformat(),
+            'context': context,
+            'frequency': 1
+        }
+        
+        # Verificar se comando já existe
+        for existing in self.unmatched_commands:
+            if existing['command'].lower() == command.lower():
+                existing['frequency'] += 1
+                existing['last_seen'] = entry['timestamp']
+                self.save_logs()
+                return
+                
+        # Adicionar novo comando
+        self.unmatched_commands.append(entry)
+        self.save_logs()
+        print(f"📝 Comando não reconhecido registado: {command}")
+        
+    def suggest_patterns(self, min_frequency=2):
+        """Sugerir novos padrões baseados em comandos frequentes"""
+        frequent_commands = [cmd for cmd in self.unmatched_commands if cmd['frequency'] >= min_frequency]
+        
+        suggestions = []
+        for cmd in frequent_commands:
+            # Análise simples para sugerir padrões
+            command_text = cmd['command'].lower()
+            
+            # Detectar padrões comuns
+            if 'carregador' in command_text and any(city in command_text for city in ['lisboa', 'porto', 'coimbra', 'braga', 'aveiro']):
+                pattern = f"Padrão sugerido para '{cmd['command']}': (r'.*carregador.*cidade.*', lambda m: 'SELECT * FROM charging_stations WHERE...')"
+                suggestions.append(pattern)
+                
+        return suggestions
+        
+    def get_learning_stats(self):
+        """Obter estatísticas de aprendizagem"""
+        total_commands = len(self.unmatched_commands)
+        frequent_commands = len([cmd for cmd in self.unmatched_commands if cmd['frequency'] >= 2])
+        
+        return {
+            'total_unmatched': total_commands,
+            'frequent_patterns': frequent_commands,
+            'suggestions_available': len(self.suggest_patterns())
+        }
+
+class EVChargingFinder:
+    def __init__(self, use_regex_only=False):
         # Initialize speech recognizer
         self.recognizer = sr.Recognizer()
+        
+        # Configuração do sistema NLP
+        self.use_regex_only = use_regex_only
+        if use_regex_only:
+            print("🚀 Modo apenas regex ativado (mais rápido e confiável)")
+        
+        # Sistema de sinônimos expandido baseado na rede mobiE e linguagem natural portuguesa
+        self.sinonimos = {
+            # Termos para carregador (baseado na rede mobiE)
+            'carregador': ['posto', 'estação', 'terminal', 'ponto', 'tomada', 'plug', 'socket'],
+            'posto de carregamento': ['carregador'],
+            'estação de carregamento': ['carregador'],
+            'ponto de carregamento': ['carregador'],
+            'terminal de carregamento': ['carregador'],
+            
+            # Termos de preço e economia
+            'barato': ['económico', 'econômico', 'em conta', 'acessível', 'baixo preço', 'mais em conta', 'menor preço'],
+            'económico': ['barato'],
+            'econômico': ['barato'],
+            'acessível': ['barato'],
+            'em conta': ['barato'],
+            
+            # Termos de velocidade e potência
+            'rápido': ['veloz', 'potente', 'forte', 'super', 'alta potência', 'high power', 'turbo'],
+            'potente': ['rápido'],
+            'veloz': ['rápido'],
+            'forte': ['rápido'],
+            'super': ['rápido'],
+            'turbo': ['rápido'],
+            
+            # Termos de qualidade
+            'melhor': ['bom', 'top', 'excelente', 'ideal', 'óptimo', 'ótimo', 'perfeito', 'recomendado'],
+            'bom': ['melhor'],
+            'excelente': ['melhor'],
+            'ideal': ['melhor'],
+            'óptimo': ['melhor'],
+            'ótimo': ['melhor'],
+            'perfeito': ['melhor'],
+            
+            # Termos de localização
+            'onde': ['aonde', 'local', 'sítio', 'lugar', 'localização', 'posição'],
+            'local': ['onde'],
+            'sítio': ['onde'],
+            'lugar': ['onde'],
+            'localização': ['onde'],
+            
+            # Termos de ação
+            'carregar': ['carregamento', 'abastecer', 'recarregar', 'alimentar', 'energizar'],
+            'carregamento': ['carregar'],
+            'abastecer': ['carregar'],
+            'recarregar': ['carregar'],
+            
+            # Termos de veículo
+            'carro': ['veículo', 'automóvel', 'viatura', 'EV', 'elétrico', 'tesla', 'leaf'],
+            'veículo': ['carro'],
+            'automóvel': ['carro'],
+            'viatura': ['carro'],
+            'elétrico': ['carro'],
+            
+            # Termos de disponibilidade
+            'disponível': ['livre', 'aberto', 'funcional', 'operacional', 'ativo'],
+            'livre': ['disponível'],
+            'aberto': ['disponível'],
+            'funcional': ['disponível'],
+            'operacional': ['disponível'],
+            
+            # Termos de proximidade
+            'perto': ['próximo', 'cerca', 'junto', 'ao lado', 'nas redondezas'],
+            'próximo': ['perto'],
+            'junto': ['perto'],
+            'ao lado': ['perto'],
+            'nas redondezas': ['perto'],
+            
+            # Termos de necessidade/urgência
+            'preciso': ['necessito', 'quero', 'gostaria', 'desejo', 'procuro'],
+            'necessito': ['preciso'],
+            'quero': ['preciso'],
+            'gostaria': ['preciso'],
+            'desejo': ['preciso'],
+            'procuro': ['preciso'],
+            
+            # Conectores e tipos específicos da mobiE
+            'type 2': ['tipo 2', 'mennekes'],
+            'chademo': ['chademo'],
+            'ccs': ['combo'],
+            'ac': ['corrente alternada'],
+            'dc': ['corrente contínua', 'fast charge'],
+            
+            # Redes específicas portuguesas
+            'mobie': ['mobiE', 'rede mobie'],
+            'galp': ['galp electric'],
+            'edp': ['edp comercial'],
+            'tesla': ['supercharger']
+        }
         
         # Configure for M3 Mac
         sr.AudioData.FLAC_CONVERTER = "flac"
@@ -52,6 +657,19 @@ class EVChargingFinder:
         # Initialize SQLite database
         self.db_path = 'charging_stations.db'
         self.init_database()
+        
+        # Inicializar sistema de aprendizagem
+        self.pattern_learner = PatternLearner()
+        
+        # Inicializar sistema de cache
+        self.query_cache = QueryCache()
+        
+        # Inicializar sistema de correção de texto
+        self.text_corrector = TextCorrector()
+        
+        # Inicializar sistema de analytics
+        self.analytics = PerformanceAnalytics()
+        self.analytics.start_session()
         
         # Variáveis para controle de gravação contínua
         self.is_recording = False
@@ -237,7 +855,8 @@ class EVChargingFinder:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Criar tabela se não existir
+            # === MELHORIAS NA BASE DE DADOS (MELHORIA 7) ===
+            # Criar tabela expandida com novos campos
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS charging_stations (
                     id VARCHAR(10) PRIMARY KEY,
@@ -245,21 +864,25 @@ class EVChargingFinder:
                     address VARCHAR(200) NOT NULL,
                     price DECIMAL(10,2) NOT NULL,
                     power INTEGER NOT NULL,
-                    available BOOLEAN NOT NULL DEFAULT true
+                    available BOOLEAN NOT NULL DEFAULT true,
+                    connector_type VARCHAR(50) DEFAULT 'Type 2',
+                    network VARCHAR(50) DEFAULT 'mobiE',
+                    status VARCHAR(20) DEFAULT 'operational',
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             
             # Verificar se já existem dados
             cursor.execute('SELECT COUNT(*) FROM charging_stations')
             if cursor.fetchone()[0] == 0:
-                # Inserir dados realistas baseados na rede mobiE
+                # Inserir dados realistas baseados na rede mobiE com novos campos
                 cursor.execute('''
-                    INSERT INTO charging_stations (id, location, address, price, power, available)
+                    INSERT INTO charging_stations (id, location, address, price, power, available, connector_type, network, status)
                     VALUES
                         -- Lisboa (múltiplas opções)
-                        ('MOBI-LIS-001', 'Lisboa', 'Avenida da Liberdade 180', 0.28, 22, true),
-                        ('MOBI-LIS-002', 'Lisboa', 'Rua Castilho 39 (El Corte Inglés)', 0.32, 50, true),
-                        ('MOBI-LIS-003', 'Lisboa', 'Avenida Engenheiro Duarte Pacheco 19', 0.25, 22, true),
+                        ('MOBI-LIS-001', 'Lisboa', 'Avenida da Liberdade 180', 0.28, 22, true, 'Type 2', 'mobiE', 'operational'),
+                        ('MOBI-LIS-002', 'Lisboa', 'Rua Castilho 39 (El Corte Inglés)', 0.32, 50, true, 'CCS', 'Galp Electric', 'operational'),
+                        ('MOBI-LIS-003', 'Lisboa', 'Avenida Engenheiro Duarte Pacheco 19', 0.25, 22, true, 'Type 2', 'mobiE', 'operational'),
                         ('MOBI-LIS-004', 'Lisboa', 'Parque das Nações - Alameda dos Oceanos', 0.43, 150, true),
                         ('MOBI-LIS-005', 'Lisboa', 'Centro Colombo - Avenida Lusíada', 0.35, 50, true),
                         
@@ -429,64 +1052,236 @@ class EVChargingFinder:
             print("🔄 Usando sistema de regex como fallback")
             return self.text_to_sql_regex(command)
     
+    def expand_synonyms(self, text):
+        """
+        Expande sinônimos no texto para melhor reconhecimento
+        """
+        text_expanded = text.lower()
+        
+        # Substituir sinônimos por palavras-chave principais
+        for palavra_chave, sinonimos in self.sinonimos.items():
+            for sinonimo in sinonimos:
+                # Usar word boundaries para evitar substituições parciais
+                import re
+                pattern = r'\b' + re.escape(sinonimo) + r'\b'
+                text_expanded = re.sub(pattern, palavra_chave, text_expanded)
+        
+        return text_expanded
+    
     def text_to_sql_regex(self, command):
         """Converte texto natural em query SQL usando regex (sistema original)"""
+        # Expandir sinônimos primeiro
+        command = self.expand_synonyms(command)
+        print(f"📝 Texto expandido: {command}")
+        
         command = command.lower().strip()
         print(f"Convertendo comando para SQL com regex: {command}")
         
-        # Padrões de conversão baseados em regras inteligentes
-        sql_patterns = {
-            # Busca por "em cidade" ou "do/da cidade" (mais específico)
-            r'(?:em|no|na|de|para|do|da)\s+(\w+)':
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC",
+        # Padrões de conversão baseados em regras inteligentes expandidas (ordem específica -> geral)
+        sql_patterns = [
+            # === PADRÕES MAIS ESPECÍFICOS PRIMEIRO ===
             
-            # Busca por "melhor carregador do/da cidade"
-            r'(?:melhor|bom).*?(?:carregador|posto).*?(?:do|da)\s+(\w+)':
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC LIMIT 1",
+            # === SISTEMA DE FILTROS AVANÇADOS (MELHORIA 4) ===
+            # Múltiplos critérios com operadores E/OU
+            (r'(?:carregador|posto|estação).*?(?:barato|económico).*?(?:e|and|\+).*?(?:rápido|potente).*?(?:e|and|\+).*?(?:disponível|livre).*?(?:em|no|na)\s+(\w+)',
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' AND price <= (SELECT AVG(price) FROM charging_stations) AND power >= (SELECT AVG(power) FROM charging_stations) AND available = true ORDER BY price ASC, power DESC"),
             
-            # Busca por cidade específica
-            r'(?:carregador|posto|carregamento).*?(?:em|no|na|de|para)\s+(\w+)': 
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC",
+            # Filtros com comparações numéricas
+            (r'(?:carregador|posto|estação).*?(?:menos|menor|até)\s+(\d+)\s*(?:euros?|€).*?(?:mais|maior|acima)\s+(\d+)\s*(?:kw|kilowatt).*?(?:em|no|na)\s+(\w+)',
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(3).lower()}%' AND price <= {m.group(1)} AND power >= {m.group(2)} ORDER BY price ASC, power DESC"),
             
-            # Busca por preço
-            r'(?:mais\s+)?(?:barato|económico|menor\s+preço)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY price ASC LIMIT 1" if m.group(1) else "SELECT * FROM charging_stations ORDER BY price ASC LIMIT 1",
+            # Filtros OU (alternativas)
+            (r'(?:carregador|posto|estação).*?(?:barato|económico).*?(?:ou|or).*?(?:rápido|potente).*?(?:em|no|na)\s+(\w+)',
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' AND (price <= (SELECT AVG(price) FROM charging_stations) OR power >= (SELECT AVG(power) FROM charging_stations)) ORDER BY price ASC, power DESC"),
             
-            # Busca por potência
-            r'(?:mais\s+)?(?:rápido|potente|alta\s+potência)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY power DESC LIMIT 1" if m.group(1) else "SELECT * FROM charging_stations ORDER BY power DESC LIMIT 1",
+            # Padrões de necessidade/urgência com contexto específico
+            (r'(?:preciso|necessito|quero|gostaria|desejo|procuro)\s+(?:de\s+)?(?:carregar|carregamento|abastecer|recarregar).*?(?:carro|veículo|automóvel|viatura|elétrico|EV).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
             
-            # Busca por potência específica
-            r'(?:carregador|posto).*?(\d+)\s*kw(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE power >= {m.group(1)} AND LOWER(location) LIKE '%{m.group(2).lower() if m.group(2) else ''}%' ORDER BY price ASC" if m.group(2) else f"SELECT * FROM charging_stations WHERE power >= {m.group(1)} ORDER BY price ASC",
+            (r'(?:preciso|necessito|quero|gostaria|desejo|procuro).*?(?:carregar|carregamento|abastecer|recarregar).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
             
-            # Busca genérica por cidade
-            r'^(\w+)$':
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC",
+            # Padrões com múltiplos critérios (preço + velocidade + localização)
+            (r'(?:carregador|posto|estação).*?(?:barato|económico|econômico).*?(?:e|and|\+).*?(?:rápido|potente|veloz).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' AND price <= (SELECT AVG(price) FROM charging_stations) AND power >= (SELECT AVG(power) FROM charging_stations) ORDER BY price ASC, power DESC"),
             
-            # Busca por universidade/campus
-            r'(?:universidade|campus|faculdade)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%universidade%' AND LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY price ASC" if m.group(1) else "SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%universidade%' ORDER BY price ASC",
+            (r'(?:carregador|posto|estação).*?(?:rápido|potente|veloz).*?(?:e|and|\+).*?(?:barato|económico|econômico).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' AND price <= (SELECT AVG(price) FROM charging_stations) AND power >= (SELECT AVG(power) FROM charging_stations) ORDER BY power DESC, price ASC"),
             
-            # Busca por shopping/centro comercial
-            r'(?:shopping|centro\s+comercial|mall)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE (LOWER(address) LIKE '%shopping%' OR LOWER(address) LIKE '%forum%' OR LOWER(address) LIKE '%centro%') AND LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY price ASC" if m.group(1) else "SELECT * FROM charging_stations WHERE (LOWER(address) LIKE '%shopping%' OR LOWER(address) LIKE '%forum%' OR LOWER(address) LIKE '%centro%') ORDER BY price ASC",
+            # Padrões de disponibilidade em tempo real
+            (r'(?:carregador|posto|estação).*?(?:disponível|livre|aberto|funcional|operacional|ativo).*?(?:agora|neste momento|atualmente).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' AND available = true ORDER BY price ASC"),
             
-            # Busca por aeroporto
-            r'(?:aeroporto|airport)(?:.*?(?:em|no|na|de|para)\s+(\w+))?':
-                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%aeroporto%' AND LOWER(location) LIKE '%{m.group(1).lower() if m.group(1) else ''}%' ORDER BY price ASC" if m.group(1) else "SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%aeroporto%' ORDER BY price ASC"
-        }
+            (r'(?:há|existe|tem).*?(?:carregador|posto|estação).*?(?:disponível|livre|aberto|funcional|operacional|ativo).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' AND available = true ORDER BY price ASC"),
+            
+            # Padrões de tipos de conectores específicos da mobiE
+            (r'(?:carregador|posto|estação).*?(?:type 2|tipo 2|mennekes|chademo|ccs|combo).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Padrões de potência específica com unidades
+            (r'(?:carregador|posto|estação).*?(\d+)\s*(?:kw|kilowatt|quilowatt).*?(?:ou mais|no mínimo|pelo menos).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE power >= {m.group(1)} AND LOWER(location) LIKE '%{m.group(2).lower()}%' ORDER BY price ASC"),
+            
+            # Padrões de redes específicas portuguesas
+            (r'(?:carregador|posto|estação).*?(?:mobie|mobiE|rede mobie|galp|galp electric|edp|edp comercial|tesla|supercharger).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Padrões de destino e viagem
+            (r'.*?(?:destino|ir|viajar|viagem|caminho).*?(?:em|para|até|do|da)\s+(\w+)', 
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            (r'(?:no caminho|na rota|entre).*?(?:para|até)\s+(\w+)', 
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Perguntas com "há", "existe", "tem" - versão expandida
+            (r'(?:há|existe|tem|encontro).*?(?:carregador|posto|estação|ponto|terminal|tomada).*?(?:perto|próximo|junto|ao lado|nas redondezas).*?(?:de|a|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            (r'(?:há|existe|tem|encontro).*?(?:carregador|posto|estação|ponto|terminal|tomada).*?(?:em|no|na|do|da)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Padrões de contexto geográfico expandido
+            (r'(?:carregador|posto|estação).*?(?:norte|centro|sul).*?(?:de\s+)?portugal', 
+             lambda m: "SELECT * FROM charging_stations WHERE LOWER(location) IN ('porto', 'braga', 'aveiro', 'coimbra', 'viseu', 'leiria') ORDER BY price ASC"),
+            
+            (r'(?:carregador|posto|estação).*?(?:região|zona|área).*?(?:de\s+)?(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Padrões de urgência temporal
+             (r'(?:preciso|necessito).*?(?:urgente|rápido|já|agora|imediatamente).*?(?:carregador|posto|estação).*?(?:em|no|na|para|do|da)\s+(\w+)', 
+              lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' AND available = true ORDER BY power DESC, price ASC LIMIT 3"),
+             
+             # === PADRÕES DE CONTEXTO GEOGRÁFICO ===
+             
+             # Padrões de contexto geográfico por região
+             (r'(?:carregador|posto|estação).*?(?:no|na|do|da)\s+norte\s+(?:de\s+)?portugal', 
+              lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%porto%' OR LOWER(location) LIKE '%braga%' OR LOWER(location) LIKE '%viana%' OR LOWER(location) LIKE '%vila real%' ORDER BY price ASC"),
+             
+             (r'(?:carregador|posto|estação).*?(?:no|na|do|da)\s+centro\s+(?:de\s+)?portugal', 
+              lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%coimbra%' OR LOWER(location) LIKE '%aveiro%' OR LOWER(location) LIKE '%viseu%' OR LOWER(location) LIKE '%leiria%' ORDER BY price ASC"),
+             
+             (r'(?:carregador|posto|estação).*?(?:no|na|do|da)\s+sul\s+(?:de\s+)?portugal', 
+              lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%lisboa%' OR LOWER(location) LIKE '%setúbal%' OR LOWER(location) LIKE '%évora%' ORDER BY price ASC"),
+             
+             (r'(?:carregador|posto|estação).*?(?:no|na|do|da)\s+algarve', 
+              lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%faro%' OR LOWER(location) LIKE '%portimão%' OR LOWER(location) LIKE '%lagos%' ORDER BY price ASC"),
+             
+             (r'(?:carregador|posto|estação).*?(?:no|na|do|da)\s+alentejo', 
+              lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%évora%' OR LOWER(location) LIKE '%beja%' ORDER BY price ASC"),
+             
+             # Padrões de proximidade avançada
+             (r'(?:carregador|posto|estação).*?(?:perto|próximo|nas\s+redondezas|nas\s+proximidades).*?(?:de|a)\s+(\w+)', 
+              lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+             
+             (r'(?:há|existe|tem).*?(?:carregador|posto|estação).*?(?:perto|próximo|nas\s+redondezas).*?(?:de|a)\s+(\w+)', 
+              lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+             
+             # Padrões de rotas entre cidades
+             (r'(?:carregador|posto|estação).*?(?:no\s+caminho|na\s+rota|entre).*?(\w+)\s+(?:e|para|até)\s+(\w+)', 
+              lambda m: f"SELECT * FROM charging_stations WHERE (LOWER(location) LIKE '%{m.group(1).lower()}%' OR LOWER(location) LIKE '%{m.group(2).lower()}%') ORDER BY price ASC"),
+             
+             (r'(?:onde|aonde).*?(?:carregar|carregamento).*?(?:no\s+caminho|na\s+rota|entre).*?(\w+)\s+(?:e|para|até)\s+(\w+)', 
+              lambda m: f"SELECT * FROM charging_stations WHERE (LOWER(location) LIKE '%{m.group(1).lower()}%' OR LOWER(location) LIKE '%{m.group(2).lower()}%') ORDER BY price ASC"),
+             
+             (r'(?:viagem|ida|deslocação).*?(?:de|desde)\s+(\w+)\s+(?:para|até|a)\s+(\w+)', 
+              lambda m: f"SELECT * FROM charging_stations WHERE (LOWER(location) LIKE '%{m.group(1).lower()}%' OR LOWER(location) LIKE '%{m.group(2).lower()}%') ORDER BY price ASC"),
+             
+             # Padrões de distância específica
+              (r'(?:carregador|posto|estação).*?(?:a|até)\s+(\d+)\s*(?:km|quilómetros|quilometros).*?(?:de|desde)\s+(\w+)', 
+               lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(2).lower()}%' ORDER BY price ASC")
+        ]
         
-        # Tentar encontrar padrão correspondente
-        for pattern, sql_generator in sql_patterns.items():
+        # === PADRÕES INTERMEDIÁRIOS ===
+        sql_patterns.extend([
+            # Busca por "melhor carregador do/da cidade"
+            (r'(?:melhor|bom).*?(?:carregador|posto).*?(?:do|da|em|no|na)\s+(\w+)',
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC LIMIT 1"),
+            
+            # Proximidade: "perto de", "próximo a" (mais específico)
+            (r'(?:carregador|posto|estação|ponto).*?(?:perto|próximo).*?(?:de|a)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Proximidade geral
+            (r'(?:perto|próximo).*?(?:de|a)\s+(\w+)', 
+             lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Busca por preço com cidade específica
+            (r'(?:mais\s+)?(?:barato|económico|menor\s+preço).*?(?:em|no|na|de|para|do|da)\s+(\w+)',
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC LIMIT 1"),
+            
+            # Busca por potência com cidade específica
+            (r'(?:mais\s+)?(?:rápido|potente|alta\s+potência).*?(?:em|no|na|de|para|do|da)\s+(\w+)',
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY power DESC LIMIT 1"),
+            
+            # Busca por cidade específica com carregador
+            (r'(?:carregador|posto|carregamento).*?(?:em|no|na|de|para|do|da)\s+(\w+)', 
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Busca por "onde carregar em cidade"
+            (r'(?:onde|aonde).*?(?:carregar|carregamento).*?(?:em|no|na|de|para|do|da)\s+(\w+)',
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Busca por "em cidade" ou "do/da cidade" (mais geral)
+            (r'(?:em|no|na|de|para|do|da)\s+(\w+)',
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Busca por preço (sem cidade específica)
+            (r'(?:mais\s+)?(?:barato|económico|menor\s+preço)(?!.*(?:em|no|na|de|para|do|da))',
+                lambda m: "SELECT * FROM charging_stations ORDER BY price ASC LIMIT 1"),
+            
+            # Busca por potência (sem cidade específica)
+            (r'(?:mais\s+)?(?:rápido|potente|alta\s+potência)(?!.*(?:em|no|na|de|para|do|da))',
+                lambda m: "SELECT * FROM charging_stations ORDER BY power DESC LIMIT 1"),
+            
+            # Busca por potência específica com cidade
+            (r'(?:carregador|posto).*?(\d+)\s*kw.*?(?:em|no|na|de|para|do|da)\s+(\w+)',
+                lambda m: f"SELECT * FROM charging_stations WHERE power >= {m.group(1)} AND LOWER(location) LIKE '%{m.group(2).lower()}%' ORDER BY price ASC"),
+            
+            # Busca por potência específica (sem cidade)
+            (r'(?:carregador|posto).*?(\d+)\s*kw',
+                lambda m: f"SELECT * FROM charging_stations WHERE power >= {m.group(1)} ORDER BY price ASC"),
+            
+            # Busca por universidade/campus com cidade
+            (r'(?:universidade|campus|faculdade).*?(?:em|no|na|de|para|do|da)\s+(\w+)',
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%universidade%' AND LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Busca por universidade/campus (sem cidade)
+            (r'(?:universidade|campus|faculdade)',
+                lambda m: "SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%universidade%' ORDER BY price ASC"),
+            
+            # Busca por shopping/centro comercial com cidade
+            (r'(?:shopping|centro\s+comercial|mall).*?(?:em|no|na|de|para|do|da)\s+(\w+)',
+                lambda m: f"SELECT * FROM charging_stations WHERE (LOWER(address) LIKE '%shopping%' OR LOWER(address) LIKE '%forum%' OR LOWER(address) LIKE '%centro%') AND LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Busca por shopping/centro comercial (sem cidade)
+            (r'(?:shopping|centro\s+comercial|mall)',
+                lambda m: "SELECT * FROM charging_stations WHERE (LOWER(address) LIKE '%shopping%' OR LOWER(address) LIKE '%forum%' OR LOWER(address) LIKE '%centro%') ORDER BY price ASC"),
+            
+            # Busca por aeroporto com cidade
+            (r'(?:aeroporto|airport).*?(?:em|no|na|de|para|do|da)\s+(\w+)',
+                lambda m: f"SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%aeroporto%' AND LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC"),
+            
+            # Busca por aeroporto (sem cidade)
+            (r'(?:aeroporto|airport)',
+                lambda m: "SELECT * FROM charging_stations WHERE LOWER(address) LIKE '%aeroporto%' ORDER BY price ASC"),
+            
+            # Busca genérica por cidade (apenas uma palavra)
+            (r'^(\w+)$',
+                 lambda m: f"SELECT * FROM charging_stations WHERE LOWER(location) LIKE '%{m.group(1).lower()}%' ORDER BY price ASC")
+        ])
+        
+        # Tentar encontrar padrão correspondente (ordem específica -> geral)
+        for pattern, sql_generator in sql_patterns:
             match = re.search(pattern, command)
             if match:
                 try:
                     sql_query = sql_generator(match)
-                    print(f"SQL gerado: {sql_query}")
+                    print(f"✅ Padrão encontrado: {pattern[:50]}...")
+                    print(f"🔍 SQL gerado: {sql_query}")
                     return sql_query
                 except Exception as e:
-                    print(f"Erro ao gerar SQL: {e}")
+                    print(f"❌ Erro ao gerar SQL: {e}")
                     continue
         
         # Fallback: busca genérica
@@ -494,8 +1289,61 @@ class EVChargingFinder:
         return "SELECT * FROM charging_stations ORDER BY price ASC LIMIT 5"
     
     def text_to_sql(self, command):
-        """Função principal que decide qual sistema usar (ChatGPT ou regex)"""
-        return self.text_to_sql_with_chatgpt(command)
+        """Função principal que decide qual sistema usar (regex prioritário, ChatGPT como fallback) com cache, correção e analytics"""
+        start_time = time.time()
+        cache_hit = False
+        corrections_made = 0
+        
+        try:
+            # Aplicar correção automática primeiro
+            corrected_command = self.text_corrector.correct_text(command)
+            if corrected_command != command:
+                corrections_made = 1
+            
+            # Verificar cache com comando corrigido
+            cached_result = self.query_cache.get(corrected_command)
+            if cached_result:
+                cache_hit = True
+                response_time = time.time() - start_time
+                self.analytics.record_query(corrected_command, response_time, True, cache_hit, corrections_made)
+                return cached_result
+            
+            print("🚀 Usando sistema de regex (mais confiável)")
+            
+            # Primeiro tentar com regex usando comando corrigido
+            sql_query = self.text_to_sql_regex(corrected_command)
+            
+            # Se modo apenas regex, retornar sempre o resultado do regex
+            if self.use_regex_only:
+                print("✅ Modo apenas regex - retornando resultado")
+                # Armazenar no cache
+                self.query_cache.set(corrected_command, sql_query)
+                response_time = time.time() - start_time
+                self.analytics.record_query(corrected_command, response_time, True, cache_hit, corrections_made)
+                return sql_query
+            
+            # Verificar se o regex gerou uma query específica (não genérica)
+            if sql_query and "ORDER BY price ASC LIMIT 5" not in sql_query:
+                print("✅ Query específica gerada pelo sistema de regex")
+                # Armazenar no cache
+                self.query_cache.set(corrected_command, sql_query)
+                response_time = time.time() - start_time
+                self.analytics.record_query(corrected_command, response_time, True, cache_hit, corrections_made)
+                return sql_query
+            
+            # Se regex não foi específico, tentar ChatGPT como fallback
+            print("🔄 Regex não foi específico, tentando ChatGPT como fallback")
+            chatgpt_result = self.text_to_sql_with_chatgpt(corrected_command)
+            # Armazenar resultado do ChatGPT no cache
+            self.query_cache.set(corrected_command, chatgpt_result)
+            response_time = time.time() - start_time
+            self.analytics.record_query(corrected_command, response_time, True, cache_hit, corrections_made)
+            return chatgpt_result
+            
+        except Exception as e:
+            response_time = time.time() - start_time
+            self.analytics.record_query(command, response_time, False, cache_hit, corrections_made)
+            raise e
     
     def execute_sql_query(self, sql_query):
         """Executa query SQL e retorna resultados"""
@@ -552,7 +1400,8 @@ class EVChargingFinder:
         print("Nenhum carregador encontrado")
         return None
 
-    def speak_response(self, text):
+    def speak_response(self, text, with_confirmation=False, suggestions=None):
+        """Interface de voz melhorada com confirmações e sugestões proativas (MELHORIA 5)"""
         print(f"Falando: {text}")
         responses = {
             "Please specify a location in Portugal": "Por favor, especifique uma localização em Portugal",
@@ -566,6 +1415,17 @@ class EVChargingFinder:
         # Translate the response
         for eng, pt in responses.items():
             text = text.replace(eng, pt)
+            
+        # Adicionar confirmação se solicitada
+        if with_confirmation:
+            text += ". Está correto?"
+            
+        # Adicionar sugestões proativas
+        if suggestions:
+            if len(suggestions) == 1:
+                text += f". Posso também sugerir: {suggestions[0]}"
+            elif len(suggestions) > 1:
+                text += f". Outras opções incluem: {', '.join(suggestions[:2])}"
         
         # Usar comando 'say' nativo do macOS para evitar problemas com pyttsx3
         def speak_in_thread():
@@ -831,7 +1691,12 @@ class EVChargingFinder:
 if __name__ == "__main__":
     import sys
     
-    finder = EVChargingFinder()
+    # Verificar se deve usar apenas regex
+    use_regex_only = '--regex-only' in sys.argv
+    if use_regex_only:
+        sys.argv.remove('--regex-only')
+    
+    finder = EVChargingFinder(use_regex_only=use_regex_only)
     
     # Verificar argumentos de linha de comando
     if len(sys.argv) > 1:
@@ -847,16 +1712,18 @@ if __name__ == "__main__":
             print("   python ZEUS.py              → Interface web (com voz na saída)")
             print("   python ZEUS.py --console    → Modo voz (microfone + fala)")
             print("   python ZEUS.py --text       → Modo texto (digitação + voz na saída)")
+            print("   python ZEUS.py --regex-only → Usar apenas sistema de regex (mais rápido)")
             print("   python ZEUS.py --help       → Mostrar esta ajuda")
             print("\n💡 Exemplos de comandos:")
             print("   • 'melhor carregador em Lisboa'")
             print("   • 'carregador mais barato no Porto'")
             print("   • 'carregadores em Coimbra'")
             print("   • 'carregador mais rápido'\n")
+            print("\n⚡ Dica: Use --regex-only para um sistema mais rápido e confiável")
         else:
             print(f"❌ Opção desconhecida: {sys.argv[1]}")
             print("💡 Use 'python ZEUS.py --help' para ver as opções disponíveis")
     else:
         print("🌐 Iniciando modo interface web...")
-        print("💡 Outros modos: --console (voz completa) | --text (digitação + voz) | --help")
+        print("💡 Outros modos: --console (voz completa) | --text (digitação + voz) | --help | --regex-only")
         finder.run(mode='web')
